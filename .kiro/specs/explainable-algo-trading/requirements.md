@@ -2,395 +2,194 @@
 
 ## Introduction
 
-This document specifies the requirements for an Explainable Algorithmic Trading System (EATS) that combines NLP-based sentiment analysis, keyword-based event detection, rule-based technical indicators, market regime detection, and composite market scoring to generate explainable trading signals. The system is designed for research and production use, emphasizing transparency, performance, and extensibility without requiring machine learning model training.
+The Explainable Algorithmic Trading System is a rule-based trading platform that combines real-time market data analysis, sentiment analysis from news sources, technical indicators, and market regime detection to generate trading signals. The system emphasizes transparency and explainability by providing clear reasoning for every trading decision through a Composite Market Score (CMS). It integrates with Zerodha Kite Connect API for live trading execution, uses high-performance C++ modules for technical indicator computation, and provides a real-time dashboard for monitoring and analysis.
 
 ## Glossary
 
-- **EATS**: Explainable Algorithmic Trading System - the complete trading system
-- **NLP Engine**: Natural Language Processing Engine - component that analyzes text for sentiment and events
-- **Sentiment Index (SI)**: A numerical score (-1 to +1) representing market sentiment derived from text analysis
-- **Event Shock Factor (ESF)**: A numerical score representing the impact magnitude of detected market events
-- **Technical Indicator Engine**: Component that calculates mathematical indicators from price data
-- **EMA**: Exponential Moving Average - a trend-following indicator
-- **RSI**: Relative Strength Index - a momentum oscillator (0-100)
-- **MACD**: Moving Average Convergence Divergence - a trend-following momentum indicator
-- **Bollinger Bands**: Volatility bands placed above and below a moving average
-- **ATR**: Average True Range - a volatility indicator
-- **Market Regime**: Classification of current market state (Bull, Bear, Sideways, Panic)
-- **CMS**: Composite Market Score - a fused score combining sentiment, volatility, trend, and events
-- **Trading Engine**: Component that generates buy/sell/hold signals based on rules
-- **Backtesting Engine**: Component that simulates historical trading performance
-- **Redis Streaming Pipeline**: Real-time data distribution system using Redis Pub/Sub
-- **PostgreSQL Storage**: Relational database for persistent data storage
-- **C++ Acceleration Module**: High-performance compiled module for intensive calculations
-- **FastAPI Backend**: Python-based REST API server
-- **React Dashboard**: Web-based user interface for visualization and control
-- **Stop-Loss**: Automatic exit price to limit losses
-- **Trailing Stop**: Dynamic stop-loss that moves with favorable price movement
-- **Position Sizing**: Calculation of trade quantity based on risk parameters
-- **PnL**: Profit and Loss
-- **CAGR**: Compound Annual Growth Rate
-- **Sharpe Ratio**: Risk-adjusted return metric
-- **Drawdown**: Peak-to-trough decline in portfolio value
-- **Zerodha Kite Connect**: API service for live trading on Indian stock exchanges
-- **KiteConnect**: Python SDK for Zerodha Kite Connect API
-- **KiteTicker**: WebSocket client for real-time market data from Zerodha
-- **Access Token**: Authentication token for Zerodha API access
-- **Order**: Instruction to buy or sell a security
-- **Position**: Currently held securities in a trading account
-- **Holdings**: Long-term investments in a trading account
-- **Margin**: Available funds for trading
-- **NSE**: National Stock Exchange of India
-- **BSE**: Bombay Stock Exchange
-- **MIS**: Margin Intraday Square-off product type
-- **CNC**: Cash and Carry product type for delivery trades
+- **Trading System**: The complete algorithmic trading platform including all subsystems
+- **NewsAPI Service**: The external news aggregation service (NewsAPI.org) providing real-time financial news
+- **NLP Sentiment Analyzer**: The natural language processing module that extracts sentiment scores from news articles
+- **Event Detector**: The keyword-based module that identifies significant market events from news content
+- **Technical Indicator Engine**: The C++ high-performance module computing technical indicators (RSI, MACD, Bollinger Bands, etc.)
+- **Market Regime Detector**: The module that classifies current market conditions (trending, ranging, volatile, calm)
+- **Composite Market Score (CMS)**: The aggregated numerical score combining sentiment, technical, and regime signals
+- **Backtesting Module**: The historical simulation engine that validates trading strategies against past data
+- **Redis Pipeline**: The in-memory data streaming infrastructure for real-time data flow
+- **PostgreSQL Database**: The persistent storage system for historical data, trades, and analysis results
+- **FastAPI Backend**: The Python-based REST API server coordinating all system components
+- **React Dashboard**: The web-based user interface displaying real-time trading data and explanations
+- **Kite Connect API**: The Zerodha brokerage API for live order execution and market data
+- **Trading Signal**: A buy, sell, or hold recommendation generated by the Trading System
+- **Order Executor**: The module responsible for placing trades through Kite Connect API
+- **Data Ingestion Pipeline**: The subsystem collecting and normalizing data from multiple sources
 
 ## Requirements
 
-### Requirement 1: NLP-Based Sentiment Analysis
+### Requirement 1
 
-**User Story:** As a quantitative researcher, I want to analyze text data for market sentiment using lexicon-based methods, so that I can incorporate sentiment signals into trading decisions without training ML models.
-
-#### Acceptance Criteria
-
-1. WHEN the NLP Engine receives text input, THE EATS SHALL compute a Sentiment Index using a lexicon-based method (VADER or custom dictionary) with a score range of -1.0 to +1.0
-2. WHEN the NLP Engine processes text, THE EATS SHALL normalize the text by removing special characters, converting to lowercase, and tokenizing into words
-3. WHEN computing Sentiment Index, THE EATS SHALL aggregate individual word sentiment scores using weighted averaging based on word position and intensity modifiers
-4. WHEN the Sentiment Index is calculated, THE EATS SHALL store the result with timestamp and source identifier in the PostgreSQL database
-5. WHEN sentiment analysis completes, THE EATS SHALL publish the Sentiment Index to the Redis sentiment stream channel within 100 milliseconds
-
-### Requirement 2: Keyword-Based Event Detection
-
-**User Story:** As a trading system operator, I want to detect significant market events through keyword matching, so that I can react to news-driven market shocks.
+**User Story:** As a trader, I want the system to analyze real-time news sentiment, so that I can incorporate market sentiment into trading decisions.
 
 #### Acceptance Criteria
 
-1. WHEN the NLP Engine receives text input, THE EATS SHALL scan for predefined event keywords including "fraud", "acquisition", "merger", "bankruptcy", "revenue up", "revenue down", "lawsuit", "FDA approval", and "earnings beat"
-2. WHEN an event keyword is detected, THE EATS SHALL calculate an Event Shock Factor with magnitude based on keyword severity and context window
-3. WHEN multiple event keywords appear in the same text, THE EATS SHALL compute the combined Event Shock Factor as the sum of individual factors capped at magnitude 5.0
-4. WHEN an event is detected, THE EATS SHALL store the event type, timestamp, source, and Event Shock Factor in the PostgreSQL events table
-5. WHEN Event Shock Factor exceeds magnitude 2.0, THE EATS SHALL publish an alert to the Redis event stream channel immediately
+1. WHEN NewsAPI Service publishes a new financial article, THE NLP Sentiment Analyzer SHALL fetch the article within 5 seconds
+2. WHEN the NLP Sentiment Analyzer processes an article, THE NLP Sentiment Analyzer SHALL extract a sentiment score between -1.0 (negative) and +1.0 (positive)
+3. WHEN the NLP Sentiment Analyzer completes sentiment extraction, THE NLP Sentiment Analyzer SHALL publish the sentiment score to the Redis Pipeline with article metadata
+4. WHEN multiple articles are published simultaneously, THE NLP Sentiment Analyzer SHALL process them concurrently without blocking
+5. WHEN the NewsAPI Service is unavailable, THE NLP Sentiment Analyzer SHALL log the failure and continue operating with cached sentiment data
 
-### Requirement 3: Technical Indicator Calculation
+### Requirement 2
 
-**User Story:** As a technical analyst, I want the system to calculate standard technical indicators from price data, so that I can incorporate technical analysis into trading rules.
-
-#### Acceptance Criteria
-
-1. WHEN price data is available, THE EATS SHALL calculate EMA with configurable periods (default 20 and 50) using the formula: EMA(t) = Price(t) * k + EMA(t-1) * (1-k) where k = 2/(period+1)
-2. WHEN price data spans at least 14 periods, THE EATS SHALL calculate RSI using the formula: RSI = 100 - (100 / (1 + RS)) where RS = average gain / average loss
-3. WHEN price data is available, THE EATS SHALL calculate MACD as the difference between 12-period and 26-period EMAs, and calculate the signal line as a 9-period EMA of MACD
-4. WHEN price data spans at least 20 periods, THE EATS SHALL calculate Bollinger Bands with middle band as 20-period SMA, upper band as middle + (2 * standard deviation), and lower band as middle - (2 * standard deviation)
-5. WHEN price data spans at least 14 periods, THE EATS SHALL calculate ATR as the 14-period moving average of True Range, where True Range is the maximum of (High-Low, |High-PreviousClose|, |Low-PreviousClose|)
-6. WHEN technical indicators are calculated, THE EATS SHALL store all indicator values with timestamp and symbol in the PostgreSQL database
-
-### Requirement 4: Market Regime Detection
-
-**User Story:** As a portfolio manager, I want the system to classify the current market regime, so that I can adapt trading strategies to market conditions.
+**User Story:** As a trader, I want the system to detect significant market events from news, so that I can react quickly to market-moving information.
 
 #### Acceptance Criteria
 
-1. WHEN volatility (measured by ATR/Price ratio) exceeds 0.05 AND Sentiment Index is below -0.5, THE EATS SHALL classify the market regime as "Panic"
-2. WHEN EMA20 is greater than EMA50 AND RSI is between 40 and 70 AND volatility is below 0.03, THE EATS SHALL classify the market regime as "Bull"
-3. WHEN EMA20 is less than EMA50 AND RSI is between 30 and 60 AND volatility is below 0.03, THE EATS SHALL classify the market regime as "Bear"
-4. WHEN the absolute difference between EMA20 and EMA50 is less than 0.5% of price AND volatility is below 0.02, THE EATS SHALL classify the market regime as "Sideways"
-5. WHEN market regime changes, THE EATS SHALL store the new regime with timestamp in the PostgreSQL regimes table and publish to the Redis regime stream channel
+1. WHEN the Event Detector receives a news article, THE Event Detector SHALL scan for predefined keywords (earnings, merger, acquisition, bankruptcy, regulatory, etc.)
+2. WHEN a keyword match is found, THE Event Detector SHALL classify the event type and assign a severity score between 0.0 and 1.0
+3. WHEN an event severity exceeds 0.7, THE Event Detector SHALL publish a high-priority alert to the Redis Pipeline
+4. WHEN multiple events are detected in a single article, THE Event Detector SHALL create separate event records for each
+5. WHEN the Event Detector processes an article, THE Event Detector SHALL complete processing within 100 milliseconds
 
-### Requirement 5: Composite Market Score Calculation
+### Requirement 3
 
-**User Story:** As a quantitative strategist, I want a unified market score that combines multiple signals, so that I can make holistic trading decisions based on a single interpretable metric.
-
-#### Acceptance Criteria
-
-1. WHEN all component scores are available, THE EATS SHALL calculate CMS using the formula: CMS = 0.4 * SentimentIndex - 0.3 * VolatilityIndex + 0.2 * TrendStrength + 0.1 * EventShockFactor
-2. WHEN calculating VolatilityIndex, THE EATS SHALL normalize ATR by dividing by current price and scaling to range -1.0 to +1.0
-3. WHEN calculating TrendStrength, THE EATS SHALL compute as (EMA20 - EMA50) / EMA50 and clip to range -1.0 to +1.0
-4. WHEN calculating CMS, THE EATS SHALL normalize EventShockFactor to range -1.0 to +1.0 by dividing by maximum expected shock magnitude of 5.0
-5. WHEN CMS is calculated, THE EATS SHALL store the value and all component scores with timestamp in the PostgreSQL cms_values table
-6. WHEN CMS is calculated, THE EATS SHALL publish the CMS value to the Redis cms stream channel within 50 milliseconds
-
-### Requirement 6: Rule-Based Trading Signal Generation
-
-**User Story:** As a systematic trader, I want the system to generate buy/sell/hold signals based on explicit rules, so that I can execute trades with full transparency and explainability.
+**User Story:** As a trader, I want the system to compute technical indicators in real-time, so that I can base trading decisions on quantitative market analysis.
 
 #### Acceptance Criteria
 
-1. WHEN EMA20 is greater than EMA50 AND SentimentIndex is greater than 0.2 AND no negative event keywords are detected in the last 24 hours AND CMS is greater than 0.3, THE EATS SHALL generate a BUY signal
-2. WHEN EMA20 is less than EMA50 AND SentimentIndex is less than -0.3 AND EventShockFactor is less than -1.0 AND CMS is less than -0.3, THE EATS SHALL generate a SELL signal
-3. WHEN neither BUY nor SELL conditions are met, THE EATS SHALL generate a HOLD signal
-4. WHEN a trading signal is generated, THE EATS SHALL include the signal type, timestamp, triggering conditions, and all component values in the signal record
-5. WHEN a trading signal is generated, THE EATS SHALL store the signal in the PostgreSQL signals table and publish to the Redis signals stream channel
+1. WHEN market price data arrives, THE Technical Indicator Engine SHALL compute RSI, MACD, Bollinger Bands, Moving Averages, and ATR within 50 milliseconds
+2. WHEN the Technical Indicator Engine completes computation, THE Technical Indicator Engine SHALL publish indicator values to the Redis Pipeline
+3. WHEN indicator values cross predefined thresholds (RSI > 70, RSI < 30, MACD crossover), THE Technical Indicator Engine SHALL generate technical signals
+4. WHEN historical data is requested for backtesting, THE Technical Indicator Engine SHALL compute indicators for the entire historical period
+5. WHEN the Technical Indicator Engine receives invalid or incomplete price data, THE Technical Indicator Engine SHALL reject the data and log an error
 
-### Requirement 7: Risk Management with Stop-Loss
+### Requirement 4
 
-**User Story:** As a risk manager, I want automated stop-loss mechanisms to limit downside risk, so that I can protect capital during adverse market movements.
-
-#### Acceptance Criteria
-
-1. WHEN a BUY signal is executed, THE EATS SHALL calculate an ATR-based stop-loss price as entry_price - (2.0 * ATR)
-2. WHEN a position is open and price moves favorably by at least 1.5 * ATR, THE EATS SHALL activate a trailing stop-loss that follows price at a distance of 1.5 * ATR
-3. WHEN current price reaches or falls below the stop-loss price, THE EATS SHALL generate an immediate SELL signal with reason "stop-loss triggered"
-4. WHEN a trailing stop is active and price moves favorably, THE EATS SHALL update the trailing stop-loss price to maintain the 1.5 * ATR distance
-5. WHEN a stop-loss is triggered, THE EATS SHALL record the stop-loss event with entry price, exit price, and loss amount in the PostgreSQL trades table
-
-### Requirement 8: Position Sizing Based on Risk
-
-**User Story:** As a portfolio manager, I want position sizes calculated based on fixed risk per trade, so that I can maintain consistent risk exposure across all trades.
+**User Story:** As a trader, I want the system to identify current market regimes, so that I can adapt trading strategies to market conditions.
 
 #### Acceptance Criteria
 
-1. WHEN a BUY signal is generated, THE EATS SHALL calculate position size using the formula: position_size = (account_equity * risk_per_trade) / (entry_price - stop_loss_price)
-2. WHEN calculating position size, THE EATS SHALL use a default risk_per_trade value of 0.02 (2% of account equity) unless configured otherwise
-3. WHEN calculated position size exceeds maximum position limit, THE EATS SHALL cap the position size at the configured maximum limit
-4. WHEN calculated position size is less than minimum tradeable quantity, THE EATS SHALL set position size to zero and mark the signal as non-tradeable
-5. WHEN position size is calculated, THE EATS SHALL include the position size, risk amount, and calculation parameters in the signal record
+1. WHEN the Market Regime Detector analyzes price data, THE Market Regime Detector SHALL classify the regime as trending-up, trending-down, ranging, volatile, or calm
+2. WHEN the Market Regime Detector determines the regime, THE Market Regime Detector SHALL compute a confidence score between 0.0 and 1.0
+3. WHEN the market regime changes, THE Market Regime Detector SHALL publish the new regime to the Redis Pipeline
+4. WHEN the Market Regime Detector operates, THE Market Regime Detector SHALL use a rolling window of the most recent 100 price bars
+5. WHEN regime classification is ambiguous (confidence < 0.6), THE Market Regime Detector SHALL default to ranging regime
 
-### Requirement 9: Backtesting Engine with Performance Metrics
+### Requirement 5
 
-**User Story:** As a quantitative researcher, I want to simulate historical trading performance, so that I can evaluate strategy effectiveness before live deployment.
-
-#### Acceptance Criteria
-
-1. WHEN the Backtesting Engine receives historical price data in CSV format, THE EATS SHALL parse the data and validate that required columns (date, open, high, low, close, volume) are present
-2. WHEN backtesting executes, THE EATS SHALL simulate trades by applying trading rules to each historical data point in chronological order
-3. WHEN backtesting completes, THE EATS SHALL calculate and report PnL curve, win rate, CAGR, Sharpe ratio, and maximum drawdown
-4. WHEN backtesting completes, THE EATS SHALL generate a trade log containing entry date, entry price, exit date, exit price, PnL, and exit reason for each simulated trade
-5. WHEN backtesting completes, THE EATS SHALL output a price chart with buy/sell markers overlaid at trade entry and exit points
-6. WHEN calculating Sharpe ratio, THE EATS SHALL use the formula: (mean_return - risk_free_rate) / std_deviation_of_returns, with annualization factor of sqrt(252) for daily returns
-7. WHEN calculating maximum drawdown, THE EATS SHALL compute the largest peak-to-trough decline in cumulative portfolio value during the backtest period
-
-### Requirement 10: PostgreSQL Data Storage Schema
-
-**User Story:** As a data engineer, I want a well-structured relational database schema, so that I can efficiently store and query all system data.
+**User Story:** As a trader, I want the system to generate a Composite Market Score, so that I have a single unified signal combining all analysis dimensions.
 
 #### Acceptance Criteria
 
-1. WHEN the EATS initializes, THE PostgreSQL database SHALL contain a historical_prices table with columns: id, symbol, timestamp, open, high, low, close, volume, and indexes on (symbol, timestamp)
-2. WHEN the EATS initializes, THE PostgreSQL database SHALL contain a sentiment_scores table with columns: id, timestamp, source, text_snippet, sentiment_index, and index on timestamp
-3. WHEN the EATS initializes, THE PostgreSQL database SHALL contain an events table with columns: id, timestamp, source, event_type, keywords_matched, event_shock_factor, and index on timestamp
-4. WHEN the EATS initializes, THE PostgreSQL database SHALL contain a signals table with columns: id, timestamp, symbol, signal_type, cms_value, sentiment_index, trend_strength, volatility_index, event_shock_factor, and indexes on (symbol, timestamp)
-5. WHEN the EATS initializes, THE PostgreSQL database SHALL contain a trades table with columns: id, symbol, entry_timestamp, entry_price, exit_timestamp, exit_price, position_size, pnl, exit_reason, and indexes on (symbol, entry_timestamp)
-6. WHEN the EATS initializes, THE PostgreSQL database SHALL contain a cms_values table with columns: id, timestamp, symbol, cms_score, sentiment_component, volatility_component, trend_component, event_component, and index on (symbol, timestamp)
-7. WHEN the EATS initializes, THE PostgreSQL database SHALL contain a regimes table with columns: id, timestamp, symbol, regime_type, volatility_level, trend_direction, and index on (symbol, timestamp)
+1. WHEN sentiment scores, technical signals, and regime data are available, THE Trading System SHALL compute the Composite Market Score (CMS) as a weighted combination
+2. WHEN the Trading System computes CMS, THE Trading System SHALL normalize the score to a range of -100 to +100
+3. WHEN CMS exceeds +60, THE Trading System SHALL generate a BUY signal
+4. WHEN CMS falls below -60, THE Trading System SHALL generate a SELL signal
+5. WHEN CMS is between -60 and +60, THE Trading System SHALL generate a HOLD signal
+6. WHEN the Trading System generates a signal, THE Trading System SHALL provide a detailed explanation including individual component scores and weights
 
-### Requirement 11: Redis Streaming Pipeline
+### Requirement 6
 
-**User Story:** As a system architect, I want real-time data distribution using Redis, so that I can decouple components and enable low-latency data flow.
-
-#### Acceptance Criteria
-
-1. WHEN the EATS starts, THE Redis Streaming Pipeline SHALL create channels named "price:live", "sentiment:live", "cms:live", "signals:live", "events:live", and "regimes:live"
-2. WHEN new price data arrives, THE EATS SHALL publish the data to the "price:live" channel in JSON format with fields: symbol, timestamp, price, volume
-3. WHEN Sentiment Index is calculated, THE EATS SHALL publish to the "sentiment:live" channel in JSON format with fields: timestamp, symbol, sentiment_index, source
-4. WHEN CMS is calculated, THE EATS SHALL publish to the "cms:live" channel in JSON format with fields: timestamp, symbol, cms_score, components
-5. WHEN a trading signal is generated, THE EATS SHALL publish to the "signals:live" channel in JSON format with fields: timestamp, symbol, signal_type, cms_value, conditions
-6. WHEN Redis publish operations fail, THE EATS SHALL retry up to 3 times with exponential backoff before logging an error
-
-### Requirement 12: High-Performance C++ Acceleration Module
-
-**User Story:** As a performance engineer, I want computationally intensive calculations performed in compiled C++ code, so that I can achieve low-latency processing for real-time trading.
+**User Story:** As a trader, I want to backtest trading strategies against historical data, so that I can validate strategy performance before live trading.
 
 #### Acceptance Criteria
 
-1. WHEN the C++ Acceleration Module is invoked, THE module SHALL compute EMA for an array of prices with time complexity O(n) where n is the number of data points
-2. WHEN the C++ Acceleration Module is invoked, THE module SHALL compute RSI for an array of prices with time complexity O(n)
-3. WHEN the C++ Acceleration Module is invoked, THE module SHALL compute ATR for arrays of high, low, and close prices with time complexity O(n)
-4. WHEN the C++ Acceleration Module is invoked, THE module SHALL compute rolling volatility (standard deviation) with time complexity O(n)
-5. WHEN the C++ Acceleration Module is called from Python, THE EATS SHALL use pybind11 bindings to expose C++ functions with zero-copy array passing for NumPy arrays
-6. WHEN the C++ Acceleration Module is built, THE build system SHALL produce a shared library (.so on Linux, .dll on Windows, .dylib on macOS) that Python can import
-7. WHEN C++ calculations complete, THE module SHALL return results as NumPy-compatible arrays without data copying
+1. WHEN a user initiates a backtest, THE Backtesting Module SHALL retrieve historical price data and news data from the PostgreSQL Database
+2. WHEN the Backtesting Module executes a backtest, THE Backtesting Module SHALL replay historical data chronologically without look-ahead bias
+3. WHEN the Backtesting Module completes a backtest, THE Backtesting Module SHALL compute performance metrics including total return, Sharpe ratio, maximum drawdown, and win rate
+4. WHEN the Backtesting Module generates trades during backtest, THE Backtesting Module SHALL record entry price, exit price, holding period, and profit/loss for each trade
+5. WHEN the Backtesting Module finishes, THE Backtesting Module SHALL store backtest results in the PostgreSQL Database with a unique backtest identifier
 
-### Requirement 13: FastAPI Backend REST Endpoints
+### Requirement 7
 
-**User Story:** As a frontend developer, I want a RESTful API to access system data and trigger operations, so that I can build interactive user interfaces.
+**User Story:** As a trader, I want real-time data streaming through Redis, so that all system components receive updates with minimal latency.
 
 #### Acceptance Criteria
 
-1. WHEN a GET request is made to /price/live/{symbol}, THE FastAPI Backend SHALL return the most recent price data from Redis or PostgreSQL with response time under 100 milliseconds
-2. WHEN a GET request is made to /sentiment/live/{symbol}, THE FastAPI Backend SHALL return the most recent Sentiment Index with timestamp and source
-3. WHEN a GET request is made to /cms/live/{symbol}, THE FastAPI Backend SHALL return the most recent CMS value with all component scores
-4. WHEN a GET request is made to /signals?symbol={symbol}&start={start}&end={end}, THE FastAPI Backend SHALL return all trading signals within the specified time range
-5. WHEN a POST request is made to /backtest/run with parameters (symbol, start_date, end_date, initial_capital), THE FastAPI Backend SHALL execute a backtest and return performance metrics
-6. WHEN a POST request is made to /trade/execute with parameters (symbol, signal_type, quantity), THE FastAPI Backend SHALL validate the trade parameters and record the trade execution
-7. WHEN a GET request is made to /logs/trades?symbol={symbol}&limit={limit}, THE FastAPI Backend SHALL return the most recent trade records up to the specified limit
-8. WHEN any endpoint encounters an error, THE FastAPI Backend SHALL return appropriate HTTP status codes (400 for bad requests, 404 for not found, 500 for server errors) with descriptive error messages
+1. WHEN any component publishes data, THE Redis Pipeline SHALL deliver the data to all subscribed components within 10 milliseconds
+2. WHEN the Redis Pipeline receives price updates, THE Redis Pipeline SHALL maintain separate channels for different data types (prices, sentiment, events, signals)
+3. WHEN a component subscribes to a Redis channel, THE Redis Pipeline SHALL deliver all subsequent messages to that component
+4. WHEN the Redis Pipeline experiences connection loss, THE Redis Pipeline SHALL attempt reconnection with exponential backoff up to 5 attempts
+5. WHEN Redis memory usage exceeds 80%, THE Redis Pipeline SHALL evict oldest entries using LRU policy
 
-### Requirement 14: React Dashboard User Interface
+### Requirement 8
 
-**User Story:** As a trader, I want a visual dashboard to monitor live data and review trading performance, so that I can make informed decisions and track system behavior.
+**User Story:** As a trader, I want persistent storage of all trading data, so that I can analyze historical performance and audit trading decisions.
 
 #### Acceptance Criteria
 
-1. WHEN the React Dashboard loads, THE EATS SHALL display a live price chart with candlesticks and overlaid buy/sell markers for the selected symbol
-2. WHEN the React Dashboard loads, THE EATS SHALL display a sentiment dashboard showing the current Sentiment Index, recent sentiment history, and detected events
-3. WHEN the React Dashboard loads, THE EATS SHALL display an event summary panel listing recent detected events with timestamps, types, and Event Shock Factors
-4. WHEN the React Dashboard loads, THE EATS SHALL display a CMS graph showing the current CMS value and historical CMS trend over the selected time period
-5. WHEN the React Dashboard loads, THE EATS SHALL display the current market regime with visual indicator (color-coded: green for Bull, red for Bear, yellow for Sideways, purple for Panic)
-6. WHEN a backtest is completed, THE React Dashboard SHALL display backtest results including equity curve, performance metrics table, and trade log
-7. WHEN the trade log is displayed, THE React Dashboard SHALL show entry date, entry price, exit date, exit price, PnL, and exit reason for each trade
-8. WHEN the React Dashboard displays charts, THE EATS SHALL render price chart with technical indicators (EMA20, EMA50, Bollinger Bands), equity curve, sentiment index timeline, CMS curve, and drawdown curve
-9. WHEN live data updates arrive via WebSocket or polling, THE React Dashboard SHALL update all displayed values and charts within 500 milliseconds
+1. WHEN the Trading System generates a signal, THE PostgreSQL Database SHALL store the signal with timestamp, CMS value, component scores, and explanation
+2. WHEN a trade is executed, THE PostgreSQL Database SHALL record order details including symbol, quantity, price, timestamp, and order status
+3. WHEN news articles are processed, THE PostgreSQL Database SHALL store article content, sentiment score, detected events, and processing timestamp
+4. WHEN technical indicators are computed, THE PostgreSQL Database SHALL store indicator values with corresponding price data and timestamp
+5. WHEN the PostgreSQL Database performs write operations, THE PostgreSQL Database SHALL complete within 100 milliseconds for single records
 
-### Requirement 15: System Architecture and Deployment
+### Requirement 9
 
-**User Story:** As a DevOps engineer, I want a containerized deployment configuration, so that I can deploy the entire system consistently across environments.
+**User Story:** As a trader, I want a REST API backend coordinating all system components, so that I can interact with the trading system programmatically.
 
 #### Acceptance Criteria
 
-1. WHEN the EATS is deployed, THE system SHALL consist of separate services: PostgreSQL database, Redis server, FastAPI backend, React frontend, and C++ calculation service
-2. WHEN Docker Compose is executed, THE EATS SHALL start all services with proper networking, volume mounts, and environment variable configuration
-3. WHEN services start, THE EATS SHALL ensure PostgreSQL initializes with the required schema before the backend service attempts database connections
-4. WHEN services start, THE EATS SHALL ensure Redis is available before the backend service attempts to publish or subscribe to channels
-5. WHEN the system is deployed, THE EATS SHALL expose the FastAPI backend on port 8000 and the React frontend on port 3000
-6. WHEN environment variables are provided, THE EATS SHALL configure database connection strings, Redis URLs, API keys, and risk parameters from environment variables rather than hardcoded values
+1. WHEN the FastAPI Backend receives a request, THE FastAPI Backend SHALL authenticate the request using API key validation
+2. WHEN the FastAPI Backend starts, THE FastAPI Backend SHALL initialize connections to Redis Pipeline, PostgreSQL Database, and Technical Indicator Engine
+3. WHEN the FastAPI Backend receives a trading signal request, THE FastAPI Backend SHALL aggregate data from all components and return the current CMS within 200 milliseconds
+4. WHEN the FastAPI Backend receives a backtest request, THE FastAPI Backend SHALL delegate to the Backtesting Module and return results upon completion
+5. WHEN the FastAPI Backend encounters an error, THE FastAPI Backend SHALL return appropriate HTTP status codes and detailed error messages
 
-### Requirement 16: Data Parsing and Validation
+### Requirement 10
 
-**User Story:** As a data quality engineer, I want robust input validation and parsing, so that I can ensure data integrity throughout the system.
-
-#### Acceptance Criteria
-
-1. WHEN price data is received, THE EATS SHALL validate that timestamp is in ISO 8601 format, price values are positive numbers, and volume is a non-negative integer
-2. WHEN text data is received for sentiment analysis, THE EATS SHALL validate that text length is between 1 and 10000 characters and contains valid UTF-8 encoding
-3. WHEN CSV files are uploaded for backtesting, THE EATS SHALL validate file format, check for required columns, and reject files with more than 10% missing data
-4. WHEN API requests are received, THE FastAPI Backend SHALL validate request parameters against defined schemas and return 400 Bad Request with detailed error messages for invalid inputs
-5. WHEN data validation fails, THE EATS SHALL log the validation error with timestamp, data source, and specific validation rule that failed
-
-### Requirement 17: Logging and Observability
-
-**User Story:** As a system administrator, I want comprehensive logging and monitoring, so that I can troubleshoot issues and monitor system health.
+**User Story:** As a trader, I want a real-time dashboard displaying trading signals and explanations, so that I can monitor system behavior and understand trading decisions.
 
 #### Acceptance Criteria
 
-1. WHEN any component performs an operation, THE EATS SHALL log the operation with timestamp, component name, operation type, and execution duration
-2. WHEN errors occur, THE EATS SHALL log the error with timestamp, component name, error type, error message, and stack trace
-3. WHEN trading signals are generated, THE EATS SHALL log the signal with all triggering conditions and component values for full explainability
-4. WHEN backtests complete, THE EATS SHALL log the backtest parameters, execution time, and summary performance metrics
-5. WHEN the system starts, THE EATS SHALL log the startup sequence, configuration parameters, and successful initialization of all components
+1. WHEN the React Dashboard loads, THE React Dashboard SHALL establish a WebSocket connection to the FastAPI Backend for real-time updates
+2. WHEN a new trading signal is generated, THE React Dashboard SHALL display the signal with CMS value, component breakdown, and explanation within 1 second
+3. WHEN the React Dashboard displays the CMS, THE React Dashboard SHALL visualize the score using a gauge chart with color coding (green for positive, red for negative)
+4. WHEN the React Dashboard shows component scores, THE React Dashboard SHALL display sentiment score, technical indicator signals, and market regime in separate panels
+5. WHEN a user selects a historical signal, THE React Dashboard SHALL retrieve and display the full explanation and market context from the PostgreSQL Database
 
-### Requirement 18: Configuration Management
+### Requirement 11
 
-**User Story:** As a system operator, I want configurable parameters for all key system settings, so that I can tune the system without code changes.
-
-#### Acceptance Criteria
-
-1. WHEN the EATS starts, THE system SHALL load configuration from a YAML or JSON file specifying EMA periods, RSI period, MACD parameters, Bollinger Band parameters, ATR period, and CMS weights
-2. WHEN the EATS starts, THE system SHALL load trading rule thresholds including sentiment thresholds, CMS thresholds, and regime detection parameters from configuration
-3. WHEN the EATS starts, THE system SHALL load risk management parameters including risk_per_trade, maximum_position_size, stop_loss_multiplier, and trailing_stop_multiplier from configuration
-4. WHEN configuration parameters are invalid, THE EATS SHALL reject the configuration, log detailed error messages, and refuse to start
-5. WHEN configuration is updated, THE EATS SHALL support hot-reloading of parameters without requiring a full system restart for non-critical parameters
-
-### Requirement 19: Pretty Printing and Serialization
-
-**User Story:** As a developer, I want consistent serialization and deserialization of all data structures, so that I can ensure data integrity across system boundaries.
+**User Story:** As a trader, I want the system to execute trades automatically through Zerodha Kite Connect, so that I can capitalize on trading signals without manual intervention.
 
 #### Acceptance Criteria
 
-1. WHEN any data structure is serialized to JSON, THE EATS SHALL produce valid JSON with consistent field naming (snake_case) and proper type encoding
-2. WHEN JSON data is deserialized, THE EATS SHALL validate the structure against expected schemas and reject malformed data
-3. WHEN data structures are serialized and then deserialized, THE EATS SHALL produce an equivalent data structure with all field values preserved
-4. WHEN timestamps are serialized, THE EATS SHALL use ISO 8601 format with timezone information
-5. WHEN floating-point numbers are serialized, THE EATS SHALL round to 6 decimal places to prevent precision issues
+1. WHEN a BUY or SELL signal is generated, THE Order Executor SHALL validate the signal against risk management rules before execution
+2. WHEN the Order Executor places an order, THE Order Executor SHALL use the Kite Connect API to submit the order with specified symbol, quantity, and order type
+3. WHEN the Kite Connect API confirms order placement, THE Order Executor SHALL store the order ID and status in the PostgreSQL Database
+4. WHEN an order is filled, THE Order Executor SHALL receive the fill notification from Kite Connect API and update the order status
+5. WHEN the Kite Connect API returns an error, THE Order Executor SHALL log the error, notify the user through the React Dashboard, and halt automatic trading
 
-### Requirement 20: Performance and Scalability
+### Requirement 12
 
-**User Story:** As a system architect, I want the system to handle high-frequency data with low latency, so that I can support real-time trading at scale.
-
-#### Acceptance Criteria
-
-1. WHEN processing real-time price updates, THE EATS SHALL complete all calculations (technical indicators, sentiment, CMS, signals) within 200 milliseconds per update
-2. WHEN running backtests, THE EATS SHALL process at least 10,000 data points per second using the C++ Acceleration Module
-3. WHEN storing data to PostgreSQL, THE EATS SHALL use batch inserts for bulk operations with batch sizes of at least 1000 records
-4. WHEN querying historical data, THE EATS SHALL utilize database indexes to return results within 500 milliseconds for queries spanning up to 1 year of data
-5. WHEN the system handles multiple concurrent users, THE FastAPI Backend SHALL support at least 100 concurrent requests with response times under 1 second
-
-### Requirement 21: Zerodha Kite Connect Authentication
-
-**User Story:** As a live trader, I want to authenticate with Zerodha Kite Connect API, so that I can execute real trades on NSE and BSE exchanges.
+**User Story:** As a system administrator, I want the C++ Technical Indicator Engine to integrate seamlessly with the Python backend, so that I can leverage high-performance computation without sacrificing system cohesion.
 
 #### Acceptance Criteria
 
-1. WHEN the EATS starts, THE system SHALL initialize KiteConnect client with API key and API secret from environment variables
-2. WHEN a user initiates authentication, THE EATS SHALL redirect the user to Zerodha login page and obtain a request token
-3. WHEN a request token is received, THE EATS SHALL exchange the request token for an access token using the API secret
-4. WHEN an access token is obtained, THE EATS SHALL store the access token securely in PostgreSQL with user identifier and expiration timestamp
-5. WHEN an access token expires, THE EATS SHALL detect the expiration and prompt the user to re-authenticate
-6. WHEN authentication fails, THE EATS SHALL log the error with timestamp and error details, and return an appropriate error message to the user
+1. WHEN the FastAPI Backend starts, THE FastAPI Backend SHALL load the Technical Indicator Engine as a shared library or communicate via inter-process communication
+2. WHEN the FastAPI Backend sends price data to the Technical Indicator Engine, THE Technical Indicator Engine SHALL accept data in a defined binary format for efficiency
+3. WHEN the Technical Indicator Engine completes computation, THE Technical Indicator Engine SHALL return results in a structured format parseable by Python
+4. WHEN the Technical Indicator Engine encounters computation errors, THE Technical Indicator Engine SHALL return error codes interpretable by the FastAPI Backend
+5. WHEN the Technical Indicator Engine is updated, THE Technical Indicator Engine SHALL maintain backward compatibility with the existing API interface
 
-### Requirement 22: Zerodha Order Placement and Management
+### Requirement 13
 
-**User Story:** As a live trader, I want to place, modify, and cancel orders through Zerodha, so that I can execute my trading strategy in real markets.
-
-#### Acceptance Criteria
-
-1. WHEN a BUY signal is generated and live trading is enabled, THE EATS SHALL place a market order using kite.place_order() with parameters: exchange, tradingsymbol, transaction_type="BUY", quantity, order_type="MARKET", product type
-2. WHEN a SELL signal is generated and live trading is enabled, THE EATS SHALL place a market order with transaction_type="SELL"
-3. WHEN an order is placed, THE EATS SHALL receive an order_id from Zerodha and store it in PostgreSQL orders table with timestamp, symbol, order type, quantity, and status
-4. WHEN an order needs modification, THE EATS SHALL call kite.modify_order() with order_id and updated parameters (quantity, price, order_type)
-5. WHEN an order needs cancellation, THE EATS SHALL call kite.cancel_order() with order_id and update the order status to "CANCELLED" in PostgreSQL
-6. WHEN order placement fails, THE EATS SHALL log the error, store the failed order attempt in PostgreSQL, and publish an alert to the Redis alerts channel
-7. WHEN an order is successfully placed, THE EATS SHALL publish the order details to the Redis orders channel in JSON format with fields: order_id, symbol, transaction_type, quantity, order_type, status, timestamp
-
-### Requirement 23: Zerodha Position and Holdings Management
-
-**User Story:** As a portfolio manager, I want to fetch current positions and holdings from Zerodha, so that I can track my portfolio state and make informed trading decisions.
+**User Story:** As a trader, I want comprehensive error handling across all system components, so that failures in one component do not cascade and crash the entire system.
 
 #### Acceptance Criteria
 
-1. WHEN the EATS requests position data, THE system SHALL call kite.positions() and retrieve all open positions with fields: tradingsymbol, exchange, quantity, average_price, pnl, product
-2. WHEN position data is retrieved, THE EATS SHALL store the positions in PostgreSQL positions table with timestamp and update existing positions if they already exist
-3. WHEN the EATS requests holdings data, THE system SHALL call kite.holdings() and retrieve all holdings with fields: tradingsymbol, exchange, quantity, average_price, last_price, pnl
-4. WHEN holdings data is retrieved, THE EATS SHALL store the holdings in PostgreSQL holdings table with timestamp
-5. WHEN position or holdings data is updated, THE EATS SHALL publish the updated data to Redis positions and holdings channels respectively
-6. WHEN position or holdings API calls fail, THE EATS SHALL retry up to 3 times with exponential backoff before logging an error
+1. WHEN any component encounters an error, THE Trading System SHALL log the error with timestamp, component name, error type, and stack trace
+2. WHEN the NewsAPI Service is unavailable, THE Trading System SHALL continue operating using the most recent sentiment data and mark sentiment as stale
+3. WHEN the Redis Pipeline is unavailable, THE Trading System SHALL buffer data locally and replay upon reconnection
+4. WHEN the PostgreSQL Database is unavailable, THE Trading System SHALL queue write operations and retry with exponential backoff
+5. WHEN the Kite Connect API is unavailable, THE Order Executor SHALL disable automatic trading and alert the user
 
-### Requirement 24: Zerodha Margin and Account Information
+### Requirement 14
 
-**User Story:** As a risk manager, I want to fetch available margin and account balance from Zerodha, so that I can ensure sufficient funds for trading and enforce position sizing limits.
-
-#### Acceptance Criteria
-
-1. WHEN the EATS requests margin data, THE system SHALL call kite.margins() and retrieve margin information including available cash, collateral, and utilized margin
-2. WHEN margin data is retrieved, THE EATS SHALL store the margin information in PostgreSQL margins table with timestamp and user identifier
-3. WHEN calculating position size for a new trade, THE EATS SHALL verify that available margin is sufficient to cover the required margin for the position
-4. WHEN available margin is insufficient for a trade, THE EATS SHALL reject the trade, log the rejection reason, and publish an alert to the Redis alerts channel
-5. WHEN margin data is updated, THE EATS SHALL publish the updated margin information to the Redis margins channel
-
-### Requirement 25: Zerodha Real-Time Market Data Integration
-
-**User Story:** As a real-time trader, I want to receive live market data from Zerodha via WebSocket, so that I can generate trading signals based on current market prices.
+**User Story:** As a trader, I want the system to provide detailed explanations for every trading decision, so that I can understand and trust the system's recommendations.
 
 #### Acceptance Criteria
 
-1. WHEN the EATS starts, THE system SHALL initialize KiteTicker WebSocket client with access token and subscribe to instruments specified in configuration
-2. WHEN tick data is received via KiteTicker, THE EATS SHALL extract price, volume, timestamp, and other relevant fields from the tick
-3. WHEN tick data is received, THE EATS SHALL publish the data to the Redis price:live channel within 50 milliseconds
-4. WHEN tick data is received, THE EATS SHALL trigger technical indicator calculations and signal generation using the updated price data
-5. WHEN WebSocket connection is lost, THE EATS SHALL attempt to reconnect automatically with exponential backoff up to 10 retry attempts
-6. WHEN WebSocket connection fails after all retries, THE EATS SHALL log a critical error and send an alert notification
-
-### Requirement 26: Zerodha Order Status Tracking
-
-**User Story:** As a trader, I want to track the status of my orders in real-time, so that I can monitor order execution and respond to order updates.
-
-#### Acceptance Criteria
-
-1. WHEN an order is placed, THE EATS SHALL poll kite.order_history(order_id) every 2 seconds until the order reaches a terminal state (COMPLETE, REJECTED, CANCELLED)
-2. WHEN order status changes, THE EATS SHALL update the order status in PostgreSQL orders table with the new status and timestamp
-3. WHEN an order is filled (status = COMPLETE), THE EATS SHALL record the fill price, fill quantity, and fill timestamp in the trades table
-4. WHEN an order is rejected, THE EATS SHALL log the rejection reason and publish an alert to the Redis alerts channel
-5. WHEN order status updates are received, THE EATS SHALL publish the updated order status to the Redis order_updates channel
-
-### Requirement 27: Live Trading Safety Controls
-
-**User Story:** As a risk manager, I want safety controls for live trading, so that I can prevent unintended trades and limit potential losses.
-
-#### Acceptance Criteria
-
-1. WHEN the EATS starts, THE system SHALL load a live_trading_enabled flag from configuration that defaults to False
-2. WHEN live_trading_enabled is False, THE EATS SHALL generate signals but SHALL NOT place orders with Zerodha
-3. WHEN live_trading_enabled is True, THE EATS SHALL enforce a maximum daily loss limit configured in settings
-4. WHEN cumulative daily losses exceed the maximum daily loss limit, THE EATS SHALL disable live trading, cancel all open orders, and send a critical alert
-5. WHEN live trading is enabled, THE EATS SHALL enforce a maximum number of trades per day configured in settings
-6. WHEN the maximum number of trades is reached, THE EATS SHALL stop placing new orders and log a warning message
-7. WHEN a trading signal would result in a position size exceeding configured maximum position limits, THE EATS SHALL reject the signal and log the rejection reason
+1. WHEN the Trading System generates a signal, THE Trading System SHALL include the individual scores from sentiment analysis, technical indicators, and market regime
+2. WHEN the Trading System computes CMS, THE Trading System SHALL document the weights applied to each component
+3. WHEN the Trading System displays an explanation, THE Trading System SHALL list the specific technical indicators that triggered signals (e.g., "RSI crossed below 30")
+4. WHEN the Trading System detects a news event, THE Trading System SHALL include the event type, severity, and relevant keywords in the explanation
+5. WHEN the React Dashboard shows an explanation, THE React Dashboard SHALL present the information in a structured, human-readable format with visual hierarchy

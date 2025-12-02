@@ -1,1545 +1,1034 @@
-# Design Document: Explainable Algorithmic Trading System (EATS)
+# Design Document
 
 ## Overview
 
-The Explainable Algorithmic Trading System (EATS) is a production-grade, research-oriented algorithmic trading platform that combines NLP-based sentiment analysis, technical indicators, market regime detection, and composite scoring to generate transparent, rule-based trading signals. The system is designed for both backtesting and live trading via Zerodha Kite Connect API.
+The Explainable Algorithmic Trading System is a distributed, real-time trading platform built on a microservices-inspired architecture. The system processes multiple data streams (market prices, news articles, technical indicators) through a Redis-based pub/sub pipeline, aggregates them into a Composite Market Score (CMS), and executes trades through the Zerodha Kite Connect API. Every component is designed for low latency, high throughput, and complete explainability.
 
-### Key Design Principles
-
-1. **Explainability**: Every trading decision is traceable to specific rules and component scores
-2. **No ML Training**: Uses lexicon-based NLP and rule-based logic only
-3. **High Performance**: C++ acceleration for compute-intensive operations
-4. **Modularity**: Loosely coupled microservices communicating via Redis
-5. **Research-Friendly**: Comprehensive logging and data storage for analysis
-6. **Production-Ready**: Safety controls, error handling, and monitoring
-
-### Technology Stack
-
-- **Backend**: Python 3.11+ with FastAPI
-- **Database**: PostgreSQL 15+ with TimescaleDB extension
-- **Cache/Streaming**: Redis 7+ with Pub/Sub
-- **Acceleration**: C++ 17 with pybind11 bindings
-- **Frontend**: React 18+ with Tailwind CSS and Recharts
-- **NLP**: VADER sentiment analyzer
-- **Trading API**: Zerodha Kite Connect Python SDK
-- **Deployment**: Docker Compose with multi-stage builds
+The architecture emphasizes:
+- **Performance**: C++ modules for compute-intensive operations, Redis for sub-10ms data delivery
+- **Reliability**: Graceful degradation, error isolation, persistent storage
+- **Explainability**: Every trading decision includes detailed reasoning with component breakdowns
+- **Modularity**: Loosely coupled components communicating through well-defined interfaces
 
 ## Architecture
 
-### High-Level Architecture
-
+### High-Level System Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                        React Dashboard                          │
-│  (Price Charts, Sentiment, CMS, Signals, Backtest Results)     │
-└────────────────────────┬────────────────────────────────────────┘
-                         │ HTTP/WebSocket
-                         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                     FastAPI Backend                             │
-│  ┌──────────┬──────────┬──────────┬──────────┬──────────┐      │
-│  │ NLP      │Technical │ Regime   │ CMS      │ Trading  │      │
-│  │ Engine   │Indicator │ Detector │Calculator│ Engine   │      │
-│  └──────────┴──────────┴──────────┴──────────┴──────────┘      │
-│  ┌──────────────────────────────────────────────────────┐      │
-│  │         C++ Acceleration Module (pybind11)           │      │
-│  │    (EMA, RSI, ATR, Volatility, Backtest Loop)        │      │
-│  └──────────────────────────────────────────────────────┘      │
-└───────┬──────────────────────────────────────────┬──────────────┘
-        │                                          │
-        │ Pub/Sub                                  │ SQL Queries
-        ▼                                          ▼
-┌──────────────────┐                    ┌──────────────────────┐
-│  Redis Streams   │                    │    PostgreSQL        │
-│  ┌────────────┐  │                    │  ┌────────────────┐  │
-│  │price:live  │  │                    │  │historical_prices│ │
-│  │sentiment   │  │                    │  │sentiment_scores │ │
-│  │cms:live    │  │                    │  │events          │ │
-│  │signals     │  │                    │  │signals         │ │
-│  │events      │  │                    │  │trades          │ │
-│  │regimes     │  │                    │  │cms_values      │ │
-│  │orders      │  │                    │  │regimes         │ │
-│  │positions   │  │                    │  │orders          │ │
-│  └────────────┘  │                    │  │positions       │ │
-└──────────────────┘                    │  │holdings        │ │
-                                        │  │margins         │ │
-        ▲                               └──────────────────────┘
-        │
-        │ WebSocket
-        ▼
-┌──────────────────────────────────────────────────────────────────┐
-│              Zerodha Kite Connect Integration                    │
-│  ┌────────────┬────────────┬────────────┬────────────┐          │
-│  │ KiteTicker │ Order Mgmt │ Positions  │ Margins    │          │
-│  │ WebSocket  │ API        │ API        │ API        │          │
-│  └────────────┴────────────┴────────────┴────────────┘          │
-└──────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│                          React Dashboard (Frontend)                      │
+│                     WebSocket + REST API (Tailwind CSS)                  │
+└────────────────────────────────┬────────────────────────────────────────┘
+                                 │
+                                 │ HTTP/WebSocket
+                                 │
+┌────────────────────────────────▼────────────────────────────────────────┐
+│                         FastAPI Backend (Python)                         │
+│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐  ┌─────────────┐│
+│  │   Signal     │  │  Backtest    │  │    Order     │  │   Config    ││
+│  │ Aggregator   │  │  Orchestrator│  │  Executor    │  │  Manager    ││
+│  └──────────────┘  └──────────────┘  └──────────────┘  └─────────────┘│
+└────────────┬───────────────────┬───────────────────┬────────────────────┘
+             │                   │                   │
+             │                   │                   │ Kite Connect API
+             │                   │                   │
+             │                   │              ┌────▼─────────────────┐
+             │                   │              │   Zerodha Kite       │
+             │                   │              │   Connect API        │
+             │                   │              └──────────────────────┘
+             │                   │
+             │                   │
+┌────────────▼───────────────────▼───────────────────▼────────────────────┐
+│                          Redis Pub/Sub Pipeline                          │
+│  Channels: prices | sentiment | events | signals | indicators | regime  │
+└────────────┬───────────────────┬───────────────────┬────────────────────┘
+             │                   │                   │
+    ┌────────▼────────┐  ┌───────▼────────┐  ┌──────▼──────────┐
+    │   NewsAPI       │  │   Technical     │  │    Market       │
+    │   Sentiment     │  │   Indicator     │  │    Regime       │
+    │   Analyzer      │  │   Engine (C++)  │  │    Detector     │
+    │   (Python)      │  │                 │  │    (Python)     │
+    └────────┬────────┘  └───────┬─────────┘  └──────┬──────────┘
+             │                   │                    │
+             │                   │                    │
+             └───────────────────┴────────────────────┘
+                                 │
+                                 │
+                    ┌────────────▼─────────────┐
+                    │   PostgreSQL Database    │
+                    │  - Historical prices     │
+                    │  - News articles         │
+                    │  - Sentiment scores      │
+                    │  - Trading signals       │
+                    │  - Executed orders       │
+                    │  - Backtest results      │
+                    └──────────────────────────┘
 ```
 
-### Microservices Architecture
+### Data Flow Overview
 
-The system consists of the following services:
-
-1. **PostgreSQL Service**: Persistent data storage
-2. **Redis Service**: Real-time data streaming and caching
-3. **Backend Service**: Core business logic (FastAPI + C++ module)
-4. **Frontend Service**: User interface (React SPA)
-5. **Zerodha Integration Service**: Live trading interface (embedded in backend)
-
-
-
-### Data Flow Sequence
-
-```mermaid
-sequenceDiagram
-    participant KT as KiteTicker
-    participant BE as Backend
-    participant CPP as C++ Module
-    participant R as Redis
-    participant DB as PostgreSQL
-    participant FE as Frontend
-
-    KT->>BE: Price tick (WebSocket)
-    BE->>CPP: Calculate indicators (EMA, RSI, ATR)
-    CPP-->>BE: Indicator values
-    BE->>BE: Calculate sentiment (NLP)
-    BE->>BE: Detect events (keywords)
-    BE->>BE: Calculate CMS
-    BE->>BE: Detect regime
-    BE->>BE: Generate signal (rules)
-    BE->>R: Publish to streams
-    BE->>DB: Store all data
-    R->>FE: Stream updates
-    alt Signal is BUY/SELL and live trading enabled
-        BE->>KT: Place order
-        KT-->>BE: Order ID
-        BE->>DB: Store order
-        BE->>R: Publish order update
-    end
-```
+1. **Market Data Ingestion**: Price data flows from Kite Connect API → Redis `prices` channel → Technical Indicator Engine
+2. **News Processing**: NewsAPI.org → Sentiment Analyzer → Redis `sentiment` channel + Event Detector → Redis `events` channel
+3. **Technical Analysis**: Technical Indicator Engine (C++) computes indicators → Redis `indicators` channel
+4. **Regime Detection**: Market Regime Detector analyzes price patterns → Redis `regime` channel
+5. **Signal Generation**: FastAPI Signal Aggregator subscribes to all channels → Computes CMS → Publishes to Redis `signals` channel
+6. **Order Execution**: Order Executor subscribes to `signals` channel → Validates → Executes via Kite Connect API
+7. **Persistence**: All components write to PostgreSQL for historical analysis and auditing
+8. **Dashboard Updates**: React Dashboard receives real-time updates via WebSocket from FastAPI Backend
 
 ## Components and Interfaces
 
-### 1. NLP Engine
+### 1. NewsAPI Sentiment Analyzer (Python)
 
-**Purpose**: Analyze text for sentiment and detect market events
+**Responsibilities:**
+- Fetch financial news articles from NewsAPI.org
+- Extract sentiment using rule-based NLP (keyword dictionaries, negation handling)
+- Publish sentiment scores to Redis
 
-**Key Classes**:
-- `SentimentAnalyzer`: Lexicon-based sentiment scoring
-- `EventDetector`: Keyword-based event detection
-- `TextPreprocessor`: Text normalization and tokenization
-
-**Interfaces**:
-
-
+**Interface:**
 ```python
 class SentimentAnalyzer:
-    def analyze(self, text: str) -> SentimentResult:
-        """
-        Analyze text and return sentiment score.
-        
-        Args:
-            text: Input text to analyze
-            
-        Returns:
-            SentimentResult with score (-1.0 to +1.0), confidence, and breakdown
-        """
-        pass
+    def fetch_news(self, symbols: List[str], lookback_hours: int) -> List[Article]
+    def analyze_sentiment(self, article: Article) -> SentimentScore
+    def publish_to_redis(self, sentiment: SentimentScore) -> None
+```
 
-class EventDetector:
-    def detect_events(self, text: str) -> List[Event]:
-        """
-        Detect market events using keyword matching.
-        
-        Args:
-            text: Input text to scan
-            
-        Returns:
-            List of detected events with type, keywords, and shock factor
-        """
-        pass
+**Data Model:**
+```python
+@dataclass
+class Article:
+    id: str
+    title: str
+    content: str
+    source: str
+    published_at: datetime
+    symbols: List[str]
 
 @dataclass
-class SentimentResult:
-    sentiment_index: float  # -1.0 to +1.0
-    confidence: float
-    positive_score: float
-    negative_score: float
-    neutral_score: float
+class SentimentScore:
+    article_id: str
+    score: float  # -1.0 to +1.0
+    confidence: float  # 0.0 to 1.0
+    keywords_positive: List[str]
+    keywords_negative: List[str]
     timestamp: datetime
+```
 
+**Redis Channel:** `sentiment`
+
+### 2. Event Detector (Python)
+
+**Responsibilities:**
+- Scan news articles for predefined keywords
+- Classify event types (earnings, merger, regulatory, etc.)
+- Assign severity scores
+- Publish high-priority events to Redis
+
+**Interface:**
+```python
+class EventDetector:
+    def detect_events(self, article: Article) -> List[Event]
+    def classify_event(self, keywords: List[str]) -> EventType
+    def compute_severity(self, event: Event) -> float
+    def publish_to_redis(self, event: Event) -> None
+```
+
+**Data Model:**
+```python
 @dataclass
 class Event:
-    event_type: str
-    keywords_matched: List[str]
-    event_shock_factor: float
-    context: str
+    id: str
+    article_id: str
+    event_type: EventType  # EARNINGS, MERGER, ACQUISITION, BANKRUPTCY, REGULATORY
+    severity: float  # 0.0 to 1.0
+    keywords: List[str]
     timestamp: datetime
+
+class EventType(Enum):
+    EARNINGS = "earnings"
+    MERGER = "merger"
+    ACQUISITION = "acquisition"
+    BANKRUPTCY = "bankruptcy"
+    REGULATORY = "regulatory"
+    PRODUCT_LAUNCH = "product_launch"
+    LEADERSHIP_CHANGE = "leadership_change"
 ```
 
-**Implementation Details**:
-- Use VADER lexicon with custom financial terms dictionary
-- Event keywords organized by severity: critical (±3.0), high (±2.0), medium (±1.0)
-- Text preprocessing: lowercase, remove URLs, remove special chars, tokenize
-- Sentiment aggregation: weighted by word position (recency bias)
+**Redis Channel:** `events`
 
-### 2. Technical Indicator Engine
+### 3. Technical Indicator Engine (C++)
 
-**Purpose**: Calculate technical indicators from price data
+**Responsibilities:**
+- Compute technical indicators (RSI, MACD, Bollinger Bands, SMA, EMA, ATR)
+- Generate technical signals based on threshold crossings
+- Optimize for sub-50ms computation latency
 
-**Key Classes**:
-- `IndicatorCalculator`: Orchestrates indicator calculations
-- `EMACalculator`, `RSICalculator`, `MACDCalculator`, etc.
-
-**Interfaces**:
-
-
-```python
-class IndicatorCalculator:
-    def __init__(self, cpp_module):
-        self.cpp = cpp_module
-    
-    def calculate_all(self, prices: PriceData) -> IndicatorSet:
-        """
-        Calculate all technical indicators.
-        
-        Args:
-            prices: OHLCV price data
-            
-        Returns:
-            IndicatorSet with all calculated indicators
-        """
-        pass
-
-@dataclass
-class PriceData:
-    timestamps: np.ndarray
-    open: np.ndarray
-    high: np.ndarray
-    low: np.ndarray
-    close: np.ndarray
-    volume: np.ndarray
-
-@dataclass
-class IndicatorSet:
-    ema_20: float
-    ema_50: float
-    rsi: float
-    macd: float
-    macd_signal: float
-    macd_histogram: float
-    bb_upper: float
-    bb_middle: float
-    bb_lower: float
-    atr: float
-    timestamp: datetime
-```
-
-**C++ Acceleration Module Interface**:
-
+**Interface (C++ with Python bindings via pybind11):**
 ```cpp
-// indicators.hpp
-namespace eats {
-
-class IndicatorCalculator {
+class TechnicalIndicatorEngine {
 public:
-    // EMA calculation with O(n) complexity
-    static std::vector<double> calculate_ema(
-        const std::vector<double>& prices,
-        int period
-    );
+    IndicatorResults compute_indicators(const PriceData& prices);
+    TechnicalSignals generate_signals(const IndicatorResults& indicators);
     
-    // RSI calculation with O(n) complexity
-    static std::vector<double> calculate_rsi(
-        const std::vector<double>& prices,
-        int period = 14
-    );
-    
-    // ATR calculation with O(n) complexity
-    static std::vector<double> calculate_atr(
-        const std::vector<double>& high,
-        const std::vector<double>& low,
-        const std::vector<double>& close,
-        int period = 14
-    );
-    
-    // Rolling volatility (std dev)
-    static std::vector<double> calculate_volatility(
-        const std::vector<double>& prices,
-        int window
-    );
+private:
+    double compute_rsi(const std::vector<double>& prices, int period);
+    MACDResult compute_macd(const std::vector<double>& prices);
+    BollingerBands compute_bollinger_bands(const std::vector<double>& prices, int period);
+    double compute_atr(const std::vector<OHLC>& bars, int period);
+};
+```
+
+**Data Model:**
+```cpp
+struct PriceData {
+    std::string symbol;
+    std::vector<OHLC> bars;
+    int64_t timestamp;
 };
 
-} // namespace eats
+struct OHLC {
+    double open;
+    double high;
+    double low;
+    double close;
+    int64_t volume;
+    int64_t timestamp;
+};
+
+struct IndicatorResults {
+    double rsi;
+    MACDResult macd;
+    BollingerBands bollinger;
+    double sma_20;
+    double sma_50;
+    double ema_12;
+    double ema_26;
+    double atr;
+};
+
+struct TechnicalSignals {
+    SignalType rsi_signal;  // OVERBOUGHT, OVERSOLD, NEUTRAL
+    SignalType macd_signal;  // BULLISH_CROSS, BEARISH_CROSS, NEUTRAL
+    SignalType bb_signal;  // UPPER_BREACH, LOWER_BREACH, NEUTRAL
+};
 ```
 
-**Python Bindings (pybind11)**:
+**Redis Channel:** `indicators`
 
+### 4. Market Regime Detector (Python)
 
-```cpp
-// bindings.cpp
-#include <pybind11/pybind11.h>
-#include <pybind11/stl.h>
-#include <pybind11/numpy.h>
-#include "indicators.hpp"
+**Responsibilities:**
+- Classify market regime using price action analysis
+- Compute regime confidence scores
+- Publish regime changes to Redis
 
-namespace py = pybind11;
-
-PYBIND11_MODULE(eats_cpp, m) {
-    m.doc() = "High-performance indicator calculations";
-    
-    py::class_<eats::IndicatorCalculator>(m, "IndicatorCalculator")
-        .def_static("calculate_ema", &eats::IndicatorCalculator::calculate_ema,
-                   "Calculate EMA with given period")
-        .def_static("calculate_rsi", &eats::IndicatorCalculator::calculate_rsi,
-                   "Calculate RSI with given period")
-        .def_static("calculate_atr", &eats::IndicatorCalculator::calculate_atr,
-                   "Calculate ATR with given period")
-        .def_static("calculate_volatility", &eats::IndicatorCalculator::calculate_volatility,
-                   "Calculate rolling volatility");
-}
-```
-
-### 3. Market Regime Detector
-
-**Purpose**: Classify current market state
-
-**Interface**:
-
+**Interface:**
 ```python
-class RegimeDetector:
-    def detect_regime(
-        self,
-        indicators: IndicatorSet,
-        sentiment: SentimentResult
-    ) -> MarketRegime:
-        """
-        Detect current market regime.
-        
-        Args:
-            indicators: Technical indicators
-            sentiment: Sentiment analysis result
-            
-        Returns:
-            MarketRegime classification
-        """
-        pass
+class MarketRegimeDetector:
+    def detect_regime(self, prices: List[OHLC], window: int = 100) -> MarketRegime
+    def compute_confidence(self, regime: MarketRegime) -> float
+    def publish_to_redis(self, regime: MarketRegime) -> None
+```
 
+**Data Model:**
+```python
 @dataclass
 class MarketRegime:
-    regime_type: str  # "Bull", "Bear", "Sideways", "Panic"
-    confidence: float
-    volatility_level: float
-    trend_direction: float
+    regime_type: RegimeType
+    confidence: float  # 0.0 to 1.0
+    volatility: float
+    trend_strength: float
     timestamp: datetime
+
+class RegimeType(Enum):
+    TRENDING_UP = "trending_up"
+    TRENDING_DOWN = "trending_down"
+    RANGING = "ranging"
+    VOLATILE = "volatile"
+    CALM = "calm"
 ```
 
-**Detection Logic**:
+**Redis Channel:** `regime`
 
+### 5. Signal Aggregator (FastAPI Backend Component)
 
+**Responsibilities:**
+- Subscribe to all Redis channels
+- Aggregate sentiment, technical, and regime data
+- Compute Composite Market Score (CMS)
+- Generate trading signals with explanations
+
+**Interface:**
 ```python
-def detect_regime(indicators, sentiment):
-    volatility_ratio = indicators.atr / indicators.close
-    trend = (indicators.ema_20 - indicators.ema_50) / indicators.ema_50
-    
-    # Panic: High volatility + negative sentiment
-    if volatility_ratio > 0.05 and sentiment.sentiment_index < -0.5:
-        return "Panic"
-    
-    # Bull: Uptrend + moderate volatility
-    elif (indicators.ema_20 > indicators.ema_50 and 
-          40 <= indicators.rsi <= 70 and 
-          volatility_ratio < 0.03):
-        return "Bull"
-    
-    # Bear: Downtrend + moderate volatility
-    elif (indicators.ema_20 < indicators.ema_50 and 
-          30 <= indicators.rsi <= 60 and 
-          volatility_ratio < 0.03):
-        return "Bear"
-    
-    # Sideways: Low volatility + flat trend
-    elif abs(trend) < 0.005 and volatility_ratio < 0.02:
-        return "Sideways"
-    
-    else:
-        return "Sideways"  # Default
+class SignalAggregator:
+    def aggregate_data(self) -> AggregatedData
+    def compute_cms(self, data: AggregatedData) -> CompositeMarketScore
+    def generate_signal(self, cms: CompositeMarketScore) -> TradingSignal
+    def create_explanation(self, signal: TradingSignal) -> Explanation
 ```
 
-### 4. Composite Market Score (CMS) Calculator
-
-**Purpose**: Fuse multiple signals into a single score
-
-**Interface**:
-
+**Data Model:**
 ```python
-class CMSCalculator:
-    def __init__(self, weights: CMSWeights):
-        self.weights = weights
-    
-    def calculate(
-        self,
-        sentiment: SentimentResult,
-        indicators: IndicatorSet,
-        events: List[Event]
-    ) -> CMSResult:
-        """
-        Calculate Composite Market Score.
-        
-        Args:
-            sentiment: Sentiment analysis result
-            indicators: Technical indicators
-            events: Detected events
-            
-        Returns:
-            CMSResult with score and component breakdown
-        """
-        pass
+@dataclass
+class AggregatedData:
+    sentiment_score: float
+    technical_signals: TechnicalSignals
+    regime: MarketRegime
+    events: List[Event]
+    timestamp: datetime
 
 @dataclass
-class CMSWeights:
-    sentiment: float = 0.4
-    volatility: float = 0.3
-    trend: float = 0.2
-    event: float = 0.1
-
-@dataclass
-class CMSResult:
-    cms_score: float  # -1.0 to +1.0
+class CompositeMarketScore:
+    score: float  # -100 to +100
     sentiment_component: float
-    volatility_component: float
-    trend_component: float
-    event_component: float
+    technical_component: float
+    regime_component: float
+    weights: Dict[str, float]
     timestamp: datetime
-```
-
-**Calculation Formula**:
-
-
-```python
-def calculate_cms(sentiment, indicators, events, weights):
-    # Sentiment component: already normalized -1 to +1
-    sentiment_comp = sentiment.sentiment_index
-    
-    # Volatility component: normalize and invert (low vol = positive)
-    volatility_ratio = indicators.atr / indicators.close
-    volatility_comp = -np.clip(volatility_ratio / 0.05, -1.0, 1.0)
-    
-    # Trend component: EMA difference normalized
-    trend_comp = np.clip(
-        (indicators.ema_20 - indicators.ema_50) / indicators.ema_50,
-        -1.0, 1.0
-    )
-    
-    # Event component: aggregate shock factors, normalize
-    total_shock = sum(e.event_shock_factor for e in events)
-    event_comp = np.clip(total_shock / 5.0, -1.0, 1.0)
-    
-    # Weighted sum
-    cms = (weights.sentiment * sentiment_comp +
-           weights.volatility * volatility_comp +
-           weights.trend * trend_comp +
-           weights.event * event_comp)
-    
-    return CMSResult(
-        cms_score=cms,
-        sentiment_component=sentiment_comp,
-        volatility_component=volatility_comp,
-        trend_component=trend_comp,
-        event_component=event_comp,
-        timestamp=datetime.now()
-    )
-```
-
-### 5. Trading Engine
-
-**Purpose**: Generate buy/sell/hold signals based on rules
-
-**Interface**:
-
-```python
-class TradingEngine:
-    def __init__(self, config: TradingConfig):
-        self.config = config
-    
-    def generate_signal(
-        self,
-        indicators: IndicatorSet,
-        sentiment: SentimentResult,
-        cms: CMSResult,
-        events: List[Event],
-        regime: MarketRegime
-    ) -> TradingSignal:
-        """
-        Generate trading signal based on rules.
-        
-        Args:
-            indicators: Technical indicators
-            sentiment: Sentiment result
-            cms: Composite market score
-            events: Recent events
-            regime: Market regime
-            
-        Returns:
-            TradingSignal with action and reasoning
-        """
-        pass
 
 @dataclass
 class TradingSignal:
-    signal_type: str  # "BUY", "SELL", "HOLD"
+    signal_type: SignalType  # BUY, SELL, HOLD
+    cms: CompositeMarketScore
     confidence: float
-    reasoning: List[str]  # Explainability
-    cms_value: float
-    sentiment_index: float
-    trend_strength: float
-    volatility_index: float
-    event_shock_factor: float
+    explanation: Explanation
     timestamp: datetime
-```
 
-**Trading Rules**:
-
-
-```python
-def generate_signal(indicators, sentiment, cms, events):
-    reasoning = []
-    
-    # Check for negative events in last 24 hours
-    recent_negative_events = [
-        e for e in events 
-        if e.event_shock_factor < 0 and 
-        (datetime.now() - e.timestamp).total_seconds() < 86400
-    ]
-    
-    # BUY conditions
-    if (indicators.ema_20 > indicators.ema_50 and
-        sentiment.sentiment_index > 0.2 and
-        len(recent_negative_events) == 0 and
-        cms.cms_score > 0.3):
-        
-        reasoning.append(f"EMA20 ({indicators.ema_20:.2f}) > EMA50 ({indicators.ema_50:.2f})")
-        reasoning.append(f"Sentiment ({sentiment.sentiment_index:.2f}) > 0.2")
-        reasoning.append("No negative events in last 24h")
-        reasoning.append(f"CMS ({cms.cms_score:.2f}) > 0.3")
-        
-        return TradingSignal(
-            signal_type="BUY",
-            confidence=cms.cms_score,
-            reasoning=reasoning,
-            cms_value=cms.cms_score,
-            sentiment_index=sentiment.sentiment_index,
-            trend_strength=(indicators.ema_20 - indicators.ema_50) / indicators.ema_50,
-            volatility_index=indicators.atr / indicators.close,
-            event_shock_factor=sum(e.event_shock_factor for e in events),
-            timestamp=datetime.now()
-        )
-    
-    # SELL conditions
-    elif (indicators.ema_20 < indicators.ema_50 and
-          sentiment.sentiment_index < -0.3 and
-          sum(e.event_shock_factor for e in events) < -1.0 and
-          cms.cms_score < -0.3):
-        
-        reasoning.append(f"EMA20 ({indicators.ema_20:.2f}) < EMA50 ({indicators.ema_50:.2f})")
-        reasoning.append(f"Sentiment ({sentiment.sentiment_index:.2f}) < -0.3")
-        reasoning.append(f"Event shock ({sum(e.event_shock_factor for e in events):.2f}) < -1.0")
-        reasoning.append(f"CMS ({cms.cms_score:.2f}) < -0.3")
-        
-        return TradingSignal(
-            signal_type="SELL",
-            confidence=abs(cms.cms_score),
-            reasoning=reasoning,
-            cms_value=cms.cms_score,
-            sentiment_index=sentiment.sentiment_index,
-            trend_strength=(indicators.ema_20 - indicators.ema_50) / indicators.ema_50,
-            volatility_index=indicators.atr / indicators.close,
-            event_shock_factor=sum(e.event_shock_factor for e in events),
-            timestamp=datetime.now()
-        )
-    
-    # HOLD
-    else:
-        reasoning.append("No clear buy or sell conditions met")
-        return TradingSignal(
-            signal_type="HOLD",
-            confidence=0.5,
-            reasoning=reasoning,
-            cms_value=cms.cms_score,
-            sentiment_index=sentiment.sentiment_index,
-            trend_strength=(indicators.ema_20 - indicators.ema_50) / indicators.ema_50,
-            volatility_index=indicators.atr / indicators.close,
-            event_shock_factor=sum(e.event_shock_factor for e in events),
-            timestamp=datetime.now()
-        )
-```
-
-### 6. Risk Management Module
-
-**Purpose**: Calculate position sizes and manage stop-losses
-
-**Interface**:
-
-
-```python
-class RiskManager:
-    def __init__(self, config: RiskConfig):
-        self.config = config
-    
-    def calculate_position_size(
-        self,
-        account_equity: float,
-        entry_price: float,
-        stop_loss_price: float
-    ) -> PositionSize:
-        """
-        Calculate position size based on fixed risk per trade.
-        
-        Args:
-            account_equity: Current account value
-            entry_price: Planned entry price
-            stop_loss_price: Stop-loss price
-            
-        Returns:
-            PositionSize with quantity and risk amount
-        """
-        pass
-    
-    def calculate_stop_loss(
-        self,
-        entry_price: float,
-        atr: float,
-        signal_type: str
-    ) -> float:
-        """
-        Calculate ATR-based stop-loss price.
-        
-        Args:
-            entry_price: Entry price
-            atr: Average True Range
-            signal_type: "BUY" or "SELL"
-            
-        Returns:
-            Stop-loss price
-        """
-        pass
-    
-    def update_trailing_stop(
-        self,
-        current_price: float,
-        entry_price: float,
-        current_stop: float,
-        atr: float,
-        signal_type: str
-    ) -> float:
-        """
-        Update trailing stop-loss.
-        
-        Args:
-            current_price: Current market price
-            entry_price: Original entry price
-            current_stop: Current stop-loss price
-            atr: Average True Range
-            signal_type: "BUY" or "SELL"
-            
-        Returns:
-            Updated stop-loss price
-        """
-        pass
+class SignalType(Enum):
+    BUY = "buy"
+    SELL = "sell"
+    HOLD = "hold"
 
 @dataclass
-class RiskConfig:
-    risk_per_trade: float = 0.02  # 2% of equity
-    stop_loss_atr_multiplier: float = 2.0
-    trailing_stop_atr_multiplier: float = 1.5
-    trailing_stop_activation_atr: float = 1.5
-    max_position_size: float = 100000.0
-    min_position_size: float = 1.0
+class Explanation:
+    summary: str
+    sentiment_details: str
+    technical_details: str
+    regime_details: str
+    event_details: str
+    component_scores: Dict[str, float]
+```
 
+**CMS Computation Formula:**
+```
+CMS = (w_sentiment * sentiment_score * 100) + 
+      (w_technical * technical_score * 100) + 
+      (w_regime * regime_score * 100)
+
+Where:
+- w_sentiment = 0.3 (configurable)
+- w_technical = 0.5 (configurable)
+- w_regime = 0.2 (configurable)
+- All scores normalized to [-1, 1] range before weighting
+```
+
+**Redis Channel:** `signals`
+
+### 6. Backtesting Module (Python)
+
+**Responsibilities:**
+- Retrieve historical data from PostgreSQL
+- Replay data chronologically
+- Simulate signal generation and order execution
+- Compute performance metrics
+
+**Interface:**
+```python
+class BacktestingModule:
+    def run_backtest(self, config: BacktestConfig) -> BacktestResult
+    def load_historical_data(self, start: datetime, end: datetime) -> HistoricalData
+    def simulate_trading(self, data: HistoricalData) -> List[Trade]
+    def compute_metrics(self, trades: List[Trade]) -> PerformanceMetrics
+```
+
+**Data Model:**
+```python
 @dataclass
-class PositionSize:
-    quantity: int
-    risk_amount: float
-    position_value: float
-    is_tradeable: bool
-```
-
-**Implementation**:
-
-
-```python
-def calculate_position_size(account_equity, entry_price, stop_loss_price, config):
-    # Risk amount in currency
-    risk_amount = account_equity * config.risk_per_trade
-    
-    # Risk per share
-    risk_per_share = abs(entry_price - stop_loss_price)
-    
-    if risk_per_share == 0:
-        return PositionSize(0, 0, 0, False)
-    
-    # Calculate quantity
-    quantity = int(risk_amount / risk_per_share)
-    
-    # Apply limits
-    position_value = quantity * entry_price
-    
-    if position_value > config.max_position_size:
-        quantity = int(config.max_position_size / entry_price)
-    
-    if quantity < config.min_position_size:
-        return PositionSize(0, 0, 0, False)
-    
-    return PositionSize(
-        quantity=quantity,
-        risk_amount=quantity * risk_per_share,
-        position_value=quantity * entry_price,
-        is_tradeable=True
-    )
-
-def calculate_stop_loss(entry_price, atr, signal_type, config):
-    if signal_type == "BUY":
-        return entry_price - (config.stop_loss_atr_multiplier * atr)
-    else:  # SELL
-        return entry_price + (config.stop_loss_atr_multiplier * atr)
-
-def update_trailing_stop(current_price, entry_price, current_stop, atr, signal_type, config):
-    if signal_type == "BUY":
-        # Check if price moved favorably enough to activate trailing stop
-        profit_atr = (current_price - entry_price) / atr
-        
-        if profit_atr >= config.trailing_stop_activation_atr:
-            # Calculate new trailing stop
-            new_stop = current_price - (config.trailing_stop_atr_multiplier * atr)
-            # Only move stop up, never down
-            return max(new_stop, current_stop)
-    
-    else:  # SELL
-        profit_atr = (entry_price - current_price) / atr
-        
-        if profit_atr >= config.trailing_stop_activation_atr:
-            new_stop = current_price + (config.trailing_stop_atr_multiplier * atr)
-            # Only move stop down, never up
-            return min(new_stop, current_stop)
-    
-    return current_stop
-```
-
-### 7. Backtesting Engine
-
-**Purpose**: Simulate historical trading performance
-
-**Interface**:
-
-
-```python
-class BacktestEngine:
-    def __init__(
-        self,
-        trading_engine: TradingEngine,
-        risk_manager: RiskManager,
-        indicator_calculator: IndicatorCalculator,
-        cms_calculator: CMSCalculator
-    ):
-        self.trading_engine = trading_engine
-        self.risk_manager = risk_manager
-        self.indicator_calculator = indicator_calculator
-        self.cms_calculator = cms_calculator
-    
-    def run_backtest(
-        self,
-        price_data: pd.DataFrame,
-        initial_capital: float,
-        sentiment_data: Optional[pd.DataFrame] = None,
-        event_data: Optional[pd.DataFrame] = None
-    ) -> BacktestResult:
-        """
-        Run backtest simulation.
-        
-        Args:
-            price_data: Historical OHLCV data
-            initial_capital: Starting capital
-            sentiment_data: Optional sentiment scores
-            event_data: Optional event data
-            
-        Returns:
-            BacktestResult with performance metrics and trade log
-        """
-        pass
+class BacktestConfig:
+    symbol: str
+    start_date: datetime
+    end_date: datetime
+    initial_capital: float
+    position_size: float
+    cms_buy_threshold: float
+    cms_sell_threshold: float
 
 @dataclass
 class BacktestResult:
+    backtest_id: str
+    config: BacktestConfig
     trades: List[Trade]
-    equity_curve: pd.Series
     metrics: PerformanceMetrics
-    signals: List[TradingSignal]
+    equity_curve: List[Tuple[datetime, float]]
+
+@dataclass
+class Trade:
+    entry_time: datetime
+    exit_time: datetime
+    entry_price: float
+    exit_price: float
+    quantity: float
+    pnl: float
+    signal_type: SignalType
 
 @dataclass
 class PerformanceMetrics:
     total_return: float
-    cagr: float
     sharpe_ratio: float
     max_drawdown: float
     win_rate: float
     total_trades: int
-    winning_trades: int
-    losing_trades: int
-    avg_win: float
-    avg_loss: float
-    profit_factor: float
-
-@dataclass
-class Trade:
-    entry_date: datetime
-    entry_price: float
-    exit_date: datetime
-    exit_price: float
-    quantity: int
-    pnl: float
-    pnl_percent: float
-    exit_reason: str
-    signal_type: str
+    avg_trade_duration: timedelta
 ```
 
-**Backtest Loop (C++ Accelerated)**:
+### 7. Order Executor (FastAPI Backend Component)
 
+**Responsibilities:**
+- Subscribe to trading signals
+- Validate signals against risk management rules
+- Execute orders via Kite Connect API
+- Track order status and update database
 
-```cpp
-// backtest.hpp
-namespace eats {
-
-struct BacktestState {
-    double cash;
-    int position;
-    double entry_price;
-    double stop_loss;
-    std::vector<Trade> trades;
-};
-
-class BacktestRunner {
-public:
-    static BacktestState run_backtest(
-        const std::vector<double>& open,
-        const std::vector<double>& high,
-        const std::vector<double>& low,
-        const std::vector<double>& close,
-        const std::vector<double>& signals,  // 1=BUY, -1=SELL, 0=HOLD
-        const std::vector<double>& stop_losses,
-        double initial_capital
-    );
-};
-
-} // namespace eats
-```
-
-**Python Backtest Implementation**:
-
+**Interface:**
 ```python
-def run_backtest(price_data, initial_capital, sentiment_data, event_data):
-    # Initialize state
-    cash = initial_capital
-    position = 0
-    entry_price = 0
-    stop_loss = 0
-    trades = []
-    equity_curve = []
-    
-    # Calculate indicators for all data
-    indicators_history = []
-    for i in range(len(price_data)):
-        if i < 50:  # Need minimum data for indicators
-            continue
-        
-        window = price_data.iloc[max(0, i-200):i+1]
-        indicators = indicator_calculator.calculate_all(window)
-        indicators_history.append(indicators)
-    
-    # Simulate trading
-    for i, indicators in enumerate(indicators_history):
-        current_price = price_data.iloc[i]['close']
-        
-        # Get sentiment and events for this timestamp
-        sentiment = get_sentiment_at_time(sentiment_data, price_data.iloc[i]['timestamp'])
-        events = get_events_at_time(event_data, price_data.iloc[i]['timestamp'])
-        
-        # Calculate CMS
-        cms = cms_calculator.calculate(sentiment, indicators, events)
-        
-        # Generate signal
-        signal = trading_engine.generate_signal(indicators, sentiment, cms, events, None)
-        
-        # Check stop-loss if in position
-        if position != 0:
-            if (position > 0 and current_price <= stop_loss) or \
-               (position < 0 and current_price >= stop_loss):
-                # Exit position
-                pnl = position * (current_price - entry_price)
-                cash += position * current_price
-                trades.append(Trade(
-                    entry_date=entry_date,
-                    entry_price=entry_price,
-                    exit_date=price_data.iloc[i]['timestamp'],
-                    exit_price=current_price,
-                    quantity=abs(position),
-                    pnl=pnl,
-                    pnl_percent=(pnl / (abs(position) * entry_price)) * 100,
-                    exit_reason="stop_loss",
-                    signal_type="BUY" if position > 0 else "SELL"
-                ))
-                position = 0
-        
-        # Execute signal
-        if signal.signal_type == "BUY" and position == 0:
-            # Calculate position size
-            temp_stop = risk_manager.calculate_stop_loss(current_price, indicators.atr, "BUY")
-            pos_size = risk_manager.calculate_position_size(cash, current_price, temp_stop)
-            
-            if pos_size.is_tradeable and cash >= pos_size.position_value:
-                position = pos_size.quantity
-                entry_price = current_price
-                entry_date = price_data.iloc[i]['timestamp']
-                stop_loss = temp_stop
-                cash -= pos_size.position_value
-        
-        elif signal.signal_type == "SELL" and position > 0:
-            # Exit long position
-            pnl = position * (current_price - entry_price)
-            cash += position * current_price
-            trades.append(Trade(
-                entry_date=entry_date,
-                entry_price=entry_price,
-                exit_date=price_data.iloc[i]['timestamp'],
-                exit_price=current_price,
-                quantity=position,
-                pnl=pnl,
-                pnl_percent=(pnl / (position * entry_price)) * 100,
-                exit_reason="signal",
-                signal_type="BUY"
-            ))
-            position = 0
-        
-        # Update trailing stop
-        if position > 0:
-            stop_loss = risk_manager.update_trailing_stop(
-                current_price, entry_price, stop_loss, indicators.atr, "BUY"
-            )
-        
-        # Record equity
-        equity = cash + (position * current_price if position > 0 else 0)
-        equity_curve.append(equity)
-    
-    # Calculate metrics
-    metrics = calculate_performance_metrics(trades, equity_curve, initial_capital)
-    
-    return BacktestResult(
-        trades=trades,
-        equity_curve=pd.Series(equity_curve),
-        metrics=metrics,
-        signals=[]
-    )
+class OrderExecutor:
+    def validate_signal(self, signal: TradingSignal) -> bool
+    def execute_order(self, signal: TradingSignal) -> Order
+    def check_order_status(self, order_id: str) -> OrderStatus
+    def handle_fill(self, order: Order) -> None
 ```
 
-### 8. Zerodha Integration Module
-
-**Purpose**: Interface with Zerodha Kite Connect API for live trading
-
-**Interface**:
-
-
+**Data Model:**
 ```python
-from kiteconnect import KiteConnect, KiteTicker
-
-class ZerodhaClient:
-    def __init__(self, api_key: str, api_secret: str):
-        self.kite = KiteConnect(api_key=api_key)
-        self.api_secret = api_secret
-        self.access_token = None
-        self.ticker = None
-    
-    def authenticate(self, request_token: str) -> str:
-        """
-        Complete authentication flow.
-        
-        Args:
-            request_token: Token from Zerodha login redirect
-            
-        Returns:
-            Access token
-        """
-        data = self.kite.generate_session(request_token, api_secret=self.api_secret)
-        self.access_token = data["access_token"]
-        self.kite.set_access_token(self.access_token)
-        return self.access_token
-    
-    def place_order(
-        self,
-        symbol: str,
-        exchange: str,
-        transaction_type: str,
-        quantity: int,
-        order_type: str = "MARKET",
-        product: str = "MIS"
-    ) -> str:
-        """
-        Place order on Zerodha.
-        
-        Args:
-            symbol: Trading symbol (e.g., "INFY")
-            exchange: Exchange (NSE/BSE)
-            transaction_type: BUY/SELL
-            quantity: Number of shares
-            order_type: MARKET/LIMIT
-            product: MIS/CNC
-            
-        Returns:
-            Order ID
-        """
-        order_id = self.kite.place_order(
-            variety=self.kite.VARIETY_REGULAR,
-            exchange=exchange,
-            tradingsymbol=symbol,
-            transaction_type=transaction_type,
-            quantity=quantity,
-            order_type=order_type,
-            product=product
-        )
-        return order_id
-    
-    def modify_order(
-        self,
-        order_id: str,
-        quantity: Optional[int] = None,
-        price: Optional[float] = None,
-        order_type: Optional[str] = None
-    ) -> str:
-        """Modify existing order."""
-        return self.kite.modify_order(
-            variety=self.kite.VARIETY_REGULAR,
-            order_id=order_id,
-            quantity=quantity,
-            price=price,
-            order_type=order_type
-        )
-    
-    def cancel_order(self, order_id: str, variety: str = "regular") -> str:
-        """Cancel order."""
-        return self.kite.cancel_order(
-            variety=variety,
-            order_id=order_id
-        )
-    
-    def get_positions(self) -> Dict:
-        """Fetch current positions."""
-        return self.kite.positions()
-    
-    def get_holdings(self) -> List[Dict]:
-        """Fetch holdings."""
-        return self.kite.holdings()
-    
-    def get_margins(self) -> Dict:
-        """Fetch margin information."""
-        return self.kite.margins()
-    
-    def get_order_history(self, order_id: str) -> List[Dict]:
-        """Get order status history."""
-        return self.kite.order_history(order_id)
-    
-    def start_ticker(self, instruments: List[int], on_tick_callback):
-        """
-        Start WebSocket ticker for real-time data.
-        
-        Args:
-            instruments: List of instrument tokens
-            on_tick_callback: Callback function for tick data
-        """
-        self.ticker = KiteTicker(self.kite.api_key, self.access_token)
-        
-        def on_ticks(ws, ticks):
-            on_tick_callback(ticks)
-        
-        def on_connect(ws, response):
-            ws.subscribe(instruments)
-            ws.set_mode(ws.MODE_FULL, instruments)
-        
-        self.ticker.on_ticks = on_ticks
-        self.ticker.on_connect = on_connect
-        self.ticker.connect(threaded=True)
-    
-    def stop_ticker(self):
-        """Stop WebSocket ticker."""
-        if self.ticker:
-            self.ticker.close()
-
 @dataclass
-class ZerodhaOrder:
+class Order:
     order_id: str
     symbol: str
-    exchange: str
-    transaction_type: str
-    quantity: int
-    order_type: str
-    product: str
-    status: str
+    order_type: OrderType  # MARKET, LIMIT
+    side: Side  # BUY, SELL
+    quantity: float
     price: Optional[float]
+    status: OrderStatus
+    signal_id: str
     timestamp: datetime
+
+class OrderType(Enum):
+    MARKET = "market"
+    LIMIT = "limit"
+
+class Side(Enum):
+    BUY = "buy"
+    SELL = "sell"
+
+class OrderStatus(Enum):
+    PENDING = "pending"
+    SUBMITTED = "submitted"
+    FILLED = "filled"
+    PARTIALLY_FILLED = "partially_filled"
+    CANCELLED = "cancelled"
+    REJECTED = "rejected"
 ```
 
-**Live Trading Orchestrator**:
+### 8. Redis Pipeline
 
+**Configuration:**
+- **Channels**: `prices`, `sentiment`, `events`, `indicators`, `regime`, `signals`
+- **Persistence**: RDB snapshots every 5 minutes + AOF for durability
+- **Eviction Policy**: LRU when memory exceeds 80%
+- **Max Memory**: 2GB (configurable)
+
+**Pub/Sub Pattern:**
+```python
+# Publisher
+redis_client.publish('sentiment', json.dumps(sentiment_score))
+
+# Subscriber
+pubsub = redis_client.pubsub()
+pubsub.subscribe('sentiment', 'events', 'indicators', 'regime')
+for message in pubsub.listen():
+    handle_message(message)
+```
+
+### 9. PostgreSQL Database
+
+**Schema:**
+
+```sql
+-- Prices table
+CREATE TABLE prices (
+    id SERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
+    open DECIMAL(10, 2),
+    high DECIMAL(10, 2),
+    low DECIMAL(10, 2),
+    close DECIMAL(10, 2),
+    volume BIGINT,
+    INDEX idx_symbol_timestamp (symbol, timestamp)
+);
+
+-- Articles table
+CREATE TABLE articles (
+    id VARCHAR(100) PRIMARY KEY,
+    title TEXT NOT NULL,
+    content TEXT,
+    source VARCHAR(100),
+    published_at TIMESTAMPTZ NOT NULL,
+    symbols TEXT[],
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Sentiment scores table
+CREATE TABLE sentiment_scores (
+    id SERIAL PRIMARY KEY,
+    article_id VARCHAR(100) REFERENCES articles(id),
+    score DECIMAL(3, 2) NOT NULL,
+    confidence DECIMAL(3, 2),
+    keywords_positive TEXT[],
+    keywords_negative TEXT[],
+    timestamp TIMESTAMPTZ NOT NULL
+);
+
+-- Events table
+CREATE TABLE events (
+    id VARCHAR(100) PRIMARY KEY,
+    article_id VARCHAR(100) REFERENCES articles(id),
+    event_type VARCHAR(50) NOT NULL,
+    severity DECIMAL(3, 2),
+    keywords TEXT[],
+    timestamp TIMESTAMPTZ NOT NULL
+);
+
+-- Trading signals table
+CREATE TABLE trading_signals (
+    id SERIAL PRIMARY KEY,
+    signal_type VARCHAR(10) NOT NULL,
+    cms_score DECIMAL(5, 2) NOT NULL,
+    sentiment_component DECIMAL(5, 2),
+    technical_component DECIMAL(5, 2),
+    regime_component DECIMAL(5, 2),
+    explanation JSONB,
+    timestamp TIMESTAMPTZ NOT NULL
+);
+
+-- Orders table
+CREATE TABLE orders (
+    id SERIAL PRIMARY KEY,
+    order_id VARCHAR(100) UNIQUE NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    order_type VARCHAR(20),
+    side VARCHAR(10),
+    quantity DECIMAL(10, 2),
+    price DECIMAL(10, 2),
+    status VARCHAR(20),
+    signal_id INTEGER REFERENCES trading_signals(id),
+    timestamp TIMESTAMPTZ NOT NULL
+);
+
+-- Backtest results table
+CREATE TABLE backtest_results (
+    id VARCHAR(100) PRIMARY KEY,
+    config JSONB NOT NULL,
+    metrics JSONB NOT NULL,
+    trades JSONB NOT NULL,
+    equity_curve JSONB NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+```
+
+### 10. FastAPI Backend
+
+**Endpoints:**
 
 ```python
-class LiveTradingOrchestrator:
-    def __init__(
-        self,
-        zerodha_client: ZerodhaClient,
-        trading_engine: TradingEngine,
-        risk_manager: RiskManager,
-        db: Database,
-        redis: Redis,
-        config: LiveTradingConfig
-    ):
-        self.zerodha = zerodha_client
-        self.trading_engine = trading_engine
-        self.risk_manager = risk_manager
-        self.db = db
-        self.redis = redis
-        self.config = config
-        self.daily_pnl = 0.0
-        self.daily_trades = 0
-    
-    def on_tick(self, ticks: List[Dict]):
-        """
-        Handle incoming tick data from Zerodha.
-        
-        Args:
-            ticks: List of tick data from KiteTicker
-        """
-        for tick in ticks:
-            # Extract price data
-            symbol = tick['instrument_token']
-            price = tick['last_price']
-            volume = tick['volume']
-            timestamp = tick['timestamp']
-            
-            # Publish to Redis
-            self.redis.publish('price:live', json.dumps({
-                'symbol': symbol,
-                'price': price,
-                'volume': volume,
-                'timestamp': timestamp.isoformat()
-            }))
-            
-            # Calculate indicators
-            indicators = self.calculate_indicators_for_symbol(symbol)
-            
-            # Get sentiment and events
-            sentiment = self.get_latest_sentiment(symbol)
-            events = self.get_recent_events(symbol)
-            
-            # Calculate CMS
-            cms = self.cms_calculator.calculate(sentiment, indicators, events)
-            
-            # Generate signal
-            signal = self.trading_engine.generate_signal(
-                indicators, sentiment, cms, events, None
-            )
-            
-            # Store signal
-            self.db.store_signal(signal)
-            self.redis.publish('signals:live', signal.to_json())
-            
-            # Execute trade if conditions met
-            if self.config.live_trading_enabled:
-                self.execute_signal(signal, symbol, price, indicators.atr)
-    
-    def execute_signal(
-        self,
-        signal: TradingSignal,
-        symbol: str,
-        current_price: float,
-        atr: float
-    ):
-        """Execute trading signal with safety checks."""
-        
-        # Safety checks
-        if not self.check_safety_limits():
-            logger.warning("Safety limits exceeded, skipping trade")
-            return
-        
-        # Get current position
-        positions = self.zerodha.get_positions()
-        current_position = self.get_position_for_symbol(positions, symbol)
-        
-        if signal.signal_type == "BUY" and current_position == 0:
-            # Calculate position size
-            margins = self.zerodha.get_margins()
-            available_cash = margins['equity']['available']['cash']
-            
-            stop_loss = self.risk_manager.calculate_stop_loss(
-                current_price, atr, "BUY"
-            )
-            
-            pos_size = self.risk_manager.calculate_position_size(
-                available_cash, current_price, stop_loss
-            )
-            
-            if pos_size.is_tradeable:
-                try:
-                    # Place order
-                    order_id = self.zerodha.place_order(
-                        symbol=symbol,
-                        exchange="NSE",
-                        transaction_type="BUY",
-                        quantity=pos_size.quantity,
-                        order_type="MARKET",
-                        product="MIS"
-                    )
-                    
-                    # Store order
-                    self.db.store_order(ZerodhaOrder(
-                        order_id=order_id,
-                        symbol=symbol,
-                        exchange="NSE",
-                        transaction_type="BUY",
-                        quantity=pos_size.quantity,
-                        order_type="MARKET",
-                        product="MIS",
-                        status="PENDING",
-                        price=current_price,
-                        timestamp=datetime.now()
-                    ))
-                    
-                    # Publish to Redis
-                    self.redis.publish('orders:live', json.dumps({
-                        'order_id': order_id,
-                        'symbol': symbol,
-                        'type': 'BUY',
-                        'quantity': pos_size.quantity,
-                        'price': current_price
-                    }))
-                    
-                    self.daily_trades += 1
-                    
-                except Exception as e:
-                    logger.error(f"Order placement failed: {e}")
-                    self.redis.publish('alerts', json.dumps({
-                        'type': 'order_error',
-                        'message': str(e),
-                        'symbol': symbol
-                    }))
-        
-        elif signal.signal_type == "SELL" and current_position > 0:
-            # Exit position
-            try:
-                order_id = self.zerodha.place_order(
-                    symbol=symbol,
-                    exchange="NSE",
-                    transaction_type="SELL",
-                    quantity=current_position,
-                    order_type="MARKET",
-                    product="MIS"
-                )
-                
-                # Store and publish
-                self.db.store_order(ZerodhaOrder(
-                    order_id=order_id,
-                    symbol=symbol,
-                    exchange="NSE",
-                    transaction_type="SELL",
-                    quantity=current_position,
-                    order_type="MARKET",
-                    product="MIS",
-                    status="PENDING",
-                    price=current_price,
-                    timestamp=datetime.now()
-                ))
-                
-                self.redis.publish('orders:live', json.dumps({
-                    'order_id': order_id,
-                    'symbol': symbol,
-                    'type': 'SELL',
-                    'quantity': current_position,
-                    'price': current_price
-                }))
-                
-            except Exception as e:
-                logger.error(f"Order placement failed: {e}")
-    
-    def check_safety_limits(self) -> bool:
-        """Check if trading is allowed based on safety limits."""
-        
-        # Check daily loss limit
-        if self.daily_pnl < -self.config.max_daily_loss:
-            logger.critical("Daily loss limit exceeded")
-            self.config.live_trading_enabled = False
-            return False
-        
-        # Check max trades per day
-        if self.daily_trades >= self.config.max_trades_per_day:
-            logger.warning("Max daily trades reached")
-            return False
-        
-        return True
+# Health check
+GET /health
 
-@dataclass
-class LiveTradingConfig:
-    live_trading_enabled: bool = False
-    max_daily_loss: float = 10000.0
-    max_trades_per_day: int = 10
-    max_position_value: float = 100000.0
+# Get current CMS and signal
+GET /api/v1/signal/current
+
+# Get signal history
+GET /api/v1/signal/history?start={start}&end={end}
+
+# Run backtest
+POST /api/v1/backtest
+Body: BacktestConfig
+
+# Get backtest results
+GET /api/v1/backtest/{backtest_id}
+
+# Get orders
+GET /api/v1/orders?status={status}
+
+# WebSocket for real-time updates
+WS /ws/signals
 ```
+
+**Middleware:**
+- API Key Authentication
+- CORS for React Dashboard
+- Request logging
+- Error handling
+
+### 11. React Dashboard
+
+**Components:**
+
+1. **CMS Gauge**: Real-time gauge chart showing current CMS (-100 to +100)
+2. **Signal Panel**: Current signal (BUY/SELL/HOLD) with color coding
+3. **Explanation Panel**: Detailed breakdown of component scores
+4. **Sentiment Panel**: Recent news articles with sentiment scores
+5. **Technical Panel**: Current indicator values and signals
+6. **Regime Panel**: Current market regime with confidence
+7. **Order History**: Table of executed orders
+8. **Backtest Panel**: Interface to run and view backtests
+
+**Technology Stack:**
+- React 18
+- Tailwind CSS for styling
+- Recharts for data visualization
+- WebSocket for real-time updates
+- Axios for REST API calls
 
 ## Data Models
 
-### Database Schema (PostgreSQL)
+All data models are defined in the Components and Interfaces section above. Key models include:
+
+- `Article`, `SentimentScore` (News processing)
+- `Event`, `EventType` (Event detection)
+- `PriceData`, `OHLC`, `IndicatorResults`, `TechnicalSignals` (Technical analysis)
+- `MarketRegime`, `RegimeType` (Regime detection)
+- `AggregatedData`, `CompositeMarketScore`, `TradingSignal`, `Explanation` (Signal generation)
+- `BacktestConfig`, `BacktestResult`, `Trade`, `PerformanceMetrics` (Backtesting)
+- `Order`, `OrderType`, `Side`, `OrderStatus` (Order execution)
 
 
-```sql
--- Historical price data
-CREATE TABLE historical_prices (
-    id BIGSERIAL PRIMARY KEY,
-    symbol VARCHAR(20) NOT NULL,
-    timestamp TIMESTAMPTZ NOT NULL,
-    open DECIMAL(12, 4) NOT NULL,
-    high DECIMAL(12, 4) NOT NULL,
-    low DECIMAL(12, 4) NOT NULL,
-    close DECIMAL(12, 4) NOT NULL,
-    volume BIGINT NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+## Correctness Properties
 
-CREATE INDEX idx_prices_symbol_timestamp ON historical_prices(symbol, timestamp DESC);
-CREATE INDEX idx_prices_timestamp ON historical_prices(timestamp DESC);
+*A property is a characteristic or behavior that should hold true across all valid executions of a system—essentially, a formal statement about what the system should do. Properties serve as the bridge between human-readable specifications and machine-verifiable correctness guarantees.*
 
--- Sentiment scores
-CREATE TABLE sentiment_scores (
-    id BIGSERIAL PRIMARY KEY,
-    timestamp TIMESTAMPTZ NOT NULL,
-    symbol VARCHAR(20),
-    source VARCHAR(100),
-    text_snippet TEXT,
-    sentiment_index DECIMAL(5, 4) NOT NULL,
-    positive_score DECIMAL(5, 4),
-    negative_score DECIMAL(5, 4),
-    neutral_score DECIMAL(5, 4),
-    confidence DECIMAL(5, 4),
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+### Property 1: Sentiment score bounds invariant
+*For any* article processed by the NLP Sentiment Analyzer, the sentiment score must be within the range [-1.0, 1.0]
+**Validates: Requirements 1.2**
 
-CREATE INDEX idx_sentiment_timestamp ON sentiment_scores(timestamp DESC);
-CREATE INDEX idx_sentiment_symbol ON sentiment_scores(symbol, timestamp DESC);
+### Property 2: Sentiment publishing completeness
+*For any* article processed by the NLP Sentiment Analyzer, the sentiment score and article metadata must be published to the Redis `sentiment` channel
+**Validates: Requirements 1.3**
 
--- Detected events
-CREATE TABLE events (
-    id BIGSERIAL PRIMARY KEY,
-    timestamp TIMESTAMPTZ NOT NULL,
-    symbol VARCHAR(20),
-    source VARCHAR(100),
-    event_type VARCHAR(50) NOT NULL,
-    keywords_matched TEXT[],
-    event_shock_factor DECIMAL(5, 2) NOT NULL,
-    context TEXT,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+### Property 3: Concurrent article processing
+*For any* set of N articles submitted simultaneously, the total processing time should be less than N times the average single-article processing time, demonstrating concurrent processing
+**Validates: Requirements 1.4**
 
-CREATE INDEX idx_events_timestamp ON events(timestamp DESC);
-CREATE INDEX idx_events_symbol ON events(symbol, timestamp DESC);
-CREATE INDEX idx_events_type ON events(event_type);
+### Property 4: Event severity bounds invariant
+*For any* event detected by the Event Detector, the severity score must be within the range [0.0, 1.0]
+**Validates: Requirements 2.2**
 
--- Trading signals
-CREATE TABLE signals (
-    id BIGSERIAL PRIMARY KEY,
-    timestamp TIMESTAMPTZ NOT NULL,
-    symbol VARCHAR(20) NOT NULL,
-    signal_type VARCHAR(10) NOT NULL,
-    confidence DECIMAL(5, 4),
-    cms_value DECIMAL(5, 4),
-    sentiment_index DECIMAL(5, 4),
-    trend_strength DECIMAL(5, 4),
-    volatility_index DECIMAL(5, 4),
-    event_shock_factor DECIMAL(5, 2),
-    reasoning JSONB,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+### Property 5: High-severity event alerting
+*For any* event with severity greater than 0.7, a high-priority alert must be published to the Redis `events` channel
+**Validates: Requirements 2.3**
 
-CREATE INDEX idx_signals_symbol_timestamp ON signals(symbol, timestamp DESC);
-CREATE INDEX idx_signals_type ON signals(signal_type);
+### Property 6: Multiple event detection
+*For any* article containing N distinct event keywords, the Event Detector must create N separate event records
+**Validates: Requirements 2.4**
 
--- Executed trades
-CREATE TABLE trades (
-    id BIGSERIAL PRIMARY KEY,
-    symbol VARCHAR(20) NOT NULL,
-    entry_timestamp TIMESTAMPTZ NOT NULL,
-    entry_price DECIMAL(12, 4) NOT NULL,
-    exit_timestamp TIMESTAMPTZ,
-    exit_price DECIMAL(12, 4),
-    quantity INTEGER NOT NULL,
-    position_size DECIMAL(15, 2),
-    pnl DECIMAL(15, 2),
-    pnl_percent DECIMAL(8, 4),
-    exit_reason VARCHAR(50),
-    signal_type VARCHAR(10),
-    stop_loss DECIMAL(12, 4),
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+### Property 7: Technical indicator publishing
+*For any* price data processed by the Technical Indicator Engine, the computed indicator values (RSI, MACD, Bollinger Bands, SMA, EMA, ATR) must be published to the Redis `indicators` channel
+**Validates: Requirements 3.2**
 
-CREATE INDEX idx_trades_symbol ON trades(symbol, entry_timestamp DESC);
-CREATE INDEX idx_trades_entry ON trades(entry_timestamp DESC);
+### Property 8: Technical signal generation on threshold crossing
+*For any* indicator values where RSI > 70 or RSI < 30 or MACD crosses zero, the Technical Indicator Engine must generate corresponding technical signals
+**Validates: Requirements 3.3**
 
--- CMS values
-CREATE TABLE cms_values (
-    id BIGSERIAL PRIMARY KEY,
-    timestamp TIMESTAMPTZ NOT NULL,
-    symbol VARCHAR(20) NOT NULL,
-    cms_score DECIMAL(5, 4) NOT NULL,
-    sentiment_component DECIMAL(5, 4),
-    volatility_component DECIMAL(5, 4),
-    trend_component DECIMAL(5, 4),
-    event_component DECIMAL(5, 4),
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+### Property 9: Historical indicator computation completeness
+*For any* historical price dataset with N periods, the Technical Indicator Engine must compute indicators for all N periods
+**Validates: Requirements 3.4**
 
-CREATE INDEX idx_cms_symbol_timestamp ON cms_values(symbol, timestamp DESC);
+### Property 10: Regime classification validity
+*For any* price data analyzed by the Market Regime Detector, the classified regime must be one of: trending-up, trending-down, ranging, volatile, or calm
+**Validates: Requirements 4.1**
 
--- Market regimes
-CREATE TABLE regimes (
-    id BIGSERIAL PRIMARY KEY,
-    timestamp TIMESTAMPTZ NOT NULL,
-    symbol VARCHAR(20) NOT NULL,
-    regime_type VARCHAR(20) NOT NULL,
-    confidence DECIMAL(5, 4),
-    volatility_level DECIMAL(5, 4),
-    trend_direction DECIMAL(5, 4),
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+### Property 11: Regime confidence bounds invariant
+*For any* regime detection, the confidence score must be within the range [0.0, 1.0]
+**Validates: Requirements 4.2**
 
-CREATE INDEX idx_regimes_symbol_timestamp ON regimes(symbol, timestamp DESC);
+### Property 12: Regime change publishing
+*For any* price sequence that causes a regime change, the new regime must be published to the Redis `regime` channel
+**Validates: Requirements 4.3**
 
--- Zerodha orders
-CREATE TABLE orders (
-    id BIGSERIAL PRIMARY KEY,
-    order_id VARCHAR(50) UNIQUE NOT NULL,
-    symbol VARCHAR(20) NOT NULL,
-    exchange VARCHAR(10) NOT NULL,
-    transaction_type VARCHAR(10) NOT NULL,
-    quantity INTEGER NOT NULL,
-    order_type VARCHAR(20) NOT NULL,
-    product VARCHAR(10) NOT NULL,
-    status VARCHAR(20) NOT NULL,
-    price DECIMAL(12, 4),
-    filled_quantity INTEGER DEFAULT 0,
-    average_price DECIMAL(12, 4),
-    order_timestamp TIMESTAMPTZ NOT NULL,
-    updated_at TIMESTAMPTZ DEFAULT NOW(),
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+### Property 13: Regime detection window size
+*For any* regime detection operation, only the most recent 100 price bars should affect the classification result
+**Validates: Requirements 4.4**
 
-CREATE INDEX idx_orders_symbol ON orders(symbol, order_timestamp DESC);
-CREATE INDEX idx_orders_status ON orders(status);
+### Property 14: Low-confidence regime default
+*For any* regime detection with confidence less than 0.6, the regime must be classified as "ranging"
+**Validates: Requirements 4.5**
 
--- Zerodha positions
-CREATE TABLE positions (
-    id BIGSERIAL PRIMARY KEY,
-    symbol VARCHAR(20) NOT NULL,
-    exchange VARCHAR(10) NOT NULL,
-    quantity INTEGER NOT NULL,
-    average_price DECIMAL(12, 4) NOT NULL,
-    last_price DECIMAL(12, 4),
-    pnl DECIMAL(15, 2),
-    product VARCHAR(10) NOT NULL,
-    timestamp TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+### Property 15: CMS bounds invariant
+*For any* inputs to the CMS computation, the resulting Composite Market Score must be within the range [-100, 100]
+**Validates: Requirements 5.2**
 
-CREATE INDEX idx_positions_symbol ON positions(symbol, timestamp DESC);
+### Property 16: CMS signal generation rules
+*For any* CMS value, the generated signal must be: BUY if CMS > 60, SELL if CMS < -60, or HOLD if -60 ≤ CMS ≤ 60
+**Validates: Requirements 5.3, 5.4, 5.5**
 
--- Zerodha holdings
-CREATE TABLE holdings (
-    id BIGSERIAL PRIMARY KEY,
-    symbol VARCHAR(20) NOT NULL,
-    exchange VARCHAR(10) NOT NULL,
-    quantity INTEGER NOT NULL,
-    average_price DECIMAL(12, 4) NOT NULL,
-    last_price DECIMAL(12, 4),
-    pnl DECIMAL(15, 2),
-    timestamp TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+### Property 17: Signal explanation completeness
+*For any* trading signal generated, the explanation must include individual component scores (sentiment, technical, regime) and the weights applied to each component
+**Validates: Requirements 5.6, 14.1, 14.2**
 
-CREATE INDEX idx_holdings_symbol ON holdings(symbol);
+### Property 18: Backtest chronological replay
+*For any* backtest execution, the historical data must be replayed in chronologically increasing order (no timestamp should precede a previous timestamp)
+**Validates: Requirements 6.2**
 
--- Zerodha margins
-CREATE TABLE margins (
-    id BIGSERIAL PRIMARY KEY,
-    user_id VARCHAR(50),
-    available_cash DECIMAL(15, 2),
-    collateral DECIMAL(15, 2),
-    utilized_margin DECIMAL(15, 2),
-    timestamp TIMESTAMPTZ NOT NULL,
-    created_at TIMESTAMPTZ DEFAULT NOW()
-);
+### Property 19: Backtest metrics completeness
+*For any* completed backtest, the results must include total return, Sharpe ratio, maximum drawdown, and win rate
+**Validates: Requirements 6.3**
 
-CREATE INDEX idx_margins_timestamp ON margins(timestamp DESC);
-```
+### Property 20: Backtest trade record completeness
+*For any* trade generated during backtesting, the trade record must include entry price, exit price, holding period, and profit/loss
+**Validates: Requirements 6.4**
 
-### Redis Channel Design
+### Property 21: Backtest result persistence
+*For any* completed backtest, the results must be stored in the PostgreSQL Database with a unique backtest identifier
+**Validates: Requirements 6.5**
 
+### Property 22: Redis channel separation
+*For any* data published to a specific Redis channel (prices, sentiment, events, signals, indicators, regime), the data must not appear in any other channel
+**Validates: Requirements 7.2**
 
-**Channel Structure**:
+### Property 23: Redis subscription delivery
+*For any* component subscribed to a Redis channel, all messages published to that channel after subscription must be delivered to the component
+**Validates: Requirements 7.3**
 
-```
-price:live          - Real-time price updates
-  Format: {"symbol": str, "price": float, "volume": int, "timestamp": str}
+### Property 24: Database record completeness
+*For any* trading signal, executed order, processed article, or computed indicator, all required fields must be stored in the PostgreSQL Database
+**Validates: Requirements 8.1, 8.2, 8.3, 8.4**
 
-sentiment:live      - Real-time sentiment scores
-  Format: {"symbol": str, "sentiment_index": float, "source": str, "timestamp": str}
+### Property 25: API authentication enforcement
+*For any* request received by the FastAPI Backend, authentication must be performed using API key validation
+**Validates: Requirements 9.1**
 
-cms:live           - Real-time CMS values
-  Format: {"symbol": str, "cms_score": float, "components": {...}, "timestamp": str}
+### Property 26: Backtest request delegation
+*For any* backtest request received by the FastAPI Backend, the request must be delegated to the Backtesting Module
+**Validates: Requirements 9.4**
 
-signals:live       - Trading signals
-  Format: {"symbol": str, "signal_type": str, "confidence": float, "reasoning": [...], "timestamp": str}
+### Property 27: API error response format
+*For any* error encountered by the FastAPI Backend, the response must include an appropriate HTTP status code and a detailed error message
+**Validates: Requirements 9.5**
 
-events:live        - Detected events
-  Format: {"symbol": str, "event_type": str, "shock_factor": float, "keywords": [...], "timestamp": str}
+### Property 28: Dashboard CMS visualization
+*For any* CMS value displayed on the React Dashboard, the gauge chart must use green color for positive values and red color for negative values
+**Validates: Requirements 10.3**
 
-regimes:live       - Market regime changes
-  Format: {"symbol": str, "regime_type": str, "confidence": float, "timestamp": str}
+### Property 29: Dashboard component panel separation
+*For any* signal displayed on the React Dashboard, the sentiment score, technical indicator signals, and market regime must be shown in separate panels
+**Validates: Requirements 10.4**
 
-orders:live        - Order updates
-  Format: {"order_id": str, "symbol": str, "type": str, "quantity": int, "status": str, "timestamp": str}
+### Property 30: Order validation before execution
+*For any* BUY or SELL signal generated, the Order Executor must validate the signal against risk management rules before submitting the order
+**Validates: Requirements 11.1**
 
-positions:live     - Position updates
-  Format: {"symbol": str, "quantity": int, "avg_price": float, "pnl": float, "timestamp": str}
+### Property 31: Order submission completeness
+*For any* order placed by the Order Executor, the order must be submitted to Kite Connect API with symbol, quantity, and order type
+**Validates: Requirements 11.2**
 
-margins:live       - Margin updates
-  Format: {"available_cash": float, "utilized": float, "timestamp": str}
+### Property 32: Order confirmation persistence
+*For any* order confirmed by Kite Connect API, the order ID and status must be stored in the PostgreSQL Database
+**Validates: Requirements 11.3**
 
-alerts             - System alerts
-  Format: {"type": str, "message": str, "severity": str, "timestamp": str}
-```
+### Property 33: Order status update on fill
+*For any* order that is filled, the Order Executor must update the order status in the database
+**Validates: Requirements 11.4**
 
-**Redis Usage Patterns**:
+### Property 34: C++ engine data format acceptance
+*For any* price data sent from FastAPI Backend to the Technical Indicator Engine, the data must be accepted in the defined binary format
+**Validates: Requirements 12.2**
+
+### Property 35: C++ engine output format
+*For any* computation completed by the Technical Indicator Engine, the results must be returned in a structured format parseable by Python
+**Validates: Requirements 12.3**
+
+### Property 36: Error logging completeness
+*For any* error encountered by any component, the error log must include timestamp, component name, error type, and stack trace
+**Validates: Requirements 13.1**
+
+### Property 37: Technical indicator explanation detail
+*For any* signal with technical triggers, the explanation must list the specific technical indicators that triggered the signal (e.g., "RSI crossed below 30")
+**Validates: Requirements 14.3**
+
+### Property 38: Event explanation completeness
+*For any* detected news event included in a signal, the explanation must include event type, severity, and relevant keywords
+**Validates: Requirements 14.4**
+
+## Error Handling
+
+The system implements comprehensive error handling with graceful degradation:
+
+### 1. External Service Failures
+
+**NewsAPI Service Unavailability:**
+- System continues operating with cached sentiment data
+- Sentiment marked as "stale" with timestamp of last update
+- Periodic retry attempts with exponential backoff
+- Alert sent to dashboard when service is down for > 5 minutes
+
+**Kite Connect API Unavailability:**
+- Automatic trading immediately disabled
+- User notified via dashboard alert
+- System continues generating signals for monitoring
+- Manual trading still possible when API recovers
+
+### 2. Infrastructure Failures
+
+**Redis Pipeline Unavailability:**
+- Components buffer data locally in memory (max 1000 messages)
+- Automatic reconnection with exponential backoff (max 5 attempts)
+- Buffered data replayed upon reconnection
+- If buffer overflows, oldest messages dropped with warning log
+
+**PostgreSQL Database Unavailability:**
+- Write operations queued in memory (max 10,000 operations)
+- Retry with exponential backoff (initial: 1s, max: 60s)
+- Critical operations (order execution) logged to file as backup
+- System continues operating in degraded mode
+
+### 3. Component Failures
+
+**Technical Indicator Engine Errors:**
+- Invalid input data rejected with error code
+- Fallback to previous indicator values if computation fails
+- Error logged with input data for debugging
+- Signal generation continues with available data
+
+**Sentiment Analyzer Errors:**
+- Failed article processing logged and skipped
+- Sentiment component excluded from CMS if unavailable
+- CMS reweighted to use only available components
+- System continues with technical and regime analysis
+
+### 4. Data Quality Issues
+
+**Invalid Price Data:**
+- Data validation before processing (non-negative prices, valid timestamps)
+- Outlier detection using statistical methods (> 3 standard deviations)
+- Invalid data rejected and logged
+- Gap filling using last known good value
+
+**Malformed News Articles:**
+- Article validation (required fields present)
+- Encoding error handling (UTF-8 fallback)
+- Truncated content handled gracefully
+- Failed articles logged and skipped
+
+### 5. Performance Degradation
+
+**High Latency Detection:**
+- Performance monitoring for all critical paths
+- Alerts when latency exceeds thresholds (sentiment: 5s, indicators: 50ms, CMS: 200ms)
+- Automatic scaling recommendations logged
+- Circuit breaker pattern for failing components
+
+**Memory Pressure:**
+- Redis LRU eviction when memory > 80%
+- Component memory monitoring
+- Garbage collection tuning for Python components
+- Alert when system memory > 90%
+
+## Testing Strategy
+
+The system employs a dual testing approach combining unit tests and property-based tests to ensure comprehensive coverage and correctness.
+
+### Unit Testing
+
+Unit tests verify specific examples, integration points, and edge cases:
+
+**Sentiment Analyzer:**
+- Test sentiment extraction for known positive/negative articles
+- Test keyword dictionary matching
+- Test negation handling ("not good" → negative)
+- Test empty article handling
+
+**Event Detector:**
+- Test keyword matching for each event type
+- Test severity scoring for known events
+- Test multiple event detection in single article
+
+**Technical Indicator Engine:**
+- Test RSI calculation with known price sequences
+- Test MACD crossover detection
+- Test Bollinger Band breach detection
+- Test indicator computation with minimum data requirements
+
+**Market Regime Detector:**
+- Test regime classification for known trending/ranging markets
+- Test confidence scoring
+- Test regime transition detection
+
+**Signal Aggregator:**
+- Test CMS computation with known component scores
+- Test signal generation at threshold boundaries
+- Test explanation generation
+
+**Order Executor:**
+- Test risk management validation
+- Test order submission to Kite Connect API (mocked)
+- Test order status tracking
+
+**Backtesting Module:**
+- Test chronological data replay
+- Test performance metric computation
+- Test trade record generation
+
+### Property-Based Testing
+
+Property-based tests verify universal properties across all inputs using **Hypothesis** (Python) and **RapidCheck** (C++):
+
+**Configuration:**
+- Minimum 100 iterations per property test
+- Shrinking enabled for minimal failing examples
+- Seed-based reproducibility for debugging
+
+**Property Test Requirements:**
+- Each property test MUST be tagged with a comment: `# Feature: explainable-algo-trading, Property X: [property text]`
+- Each correctness property MUST be implemented by a SINGLE property-based test
+- Tests MUST use smart generators that constrain to valid input spaces
+
+**Example Property Test Structure:**
 
 ```python
-# Publisher (Backend)
-redis_client.publish('price:live', json.dumps({
-    'symbol': 'INFY',
-    'price': 1450.50,
-    'volume': 1000000,
-    'timestamp': datetime.now().isoformat()
-}))
+from hypothesis import given, strategies as st
 
-# Subscriber (Frontend/Other Services)
-pubsub = redis_client.pubsub()
-pubsub.subscribe('price:live', 'signals:live', 'cms:live')
-
-for message in pubsub.listen():
-    if message['type'] == 'message':
-        data = json.loads(message['data'])
-        handle_update(data)
+# Feature: explainable-algo-trading, Property 1: Sentiment score bounds invariant
+@given(article=st.builds(Article, ...))
+def test_sentiment_score_bounds(article):
+    sentiment = analyzer.analyze_sentiment(article)
+    assert -1.0 <= sentiment.score <= 1.0
 ```
 
-Now I need to complete the prework analysis before writing the Correctness Properties section.
+**Generator Strategies:**
 
+*Price Data Generator:*
+```python
+@st.composite
+def price_data(draw):
+    n_bars = draw(st.integers(min_value=100, max_value=1000))
+    base_price = draw(st.floats(min_value=10.0, max_value=1000.0))
+    bars = []
+    for _ in range(n_bars):
+        open_price = base_price * draw(st.floats(min_value=0.95, max_value=1.05))
+        high = open_price * draw(st.floats(min_value=1.0, max_value=1.02))
+        low = open_price * draw(st.floats(min_value=0.98, max_value=1.0))
+        close = draw(st.floats(min_value=low, max_value=high))
+        bars.append(OHLC(open_price, high, low, close, ...))
+    return PriceData(bars=bars)
+```
+
+*Article Generator:*
+```python
+@st.composite
+def article(draw):
+    sentiment_words = draw(st.lists(
+        st.sampled_from(['bullish', 'bearish', 'positive', 'negative', ...]),
+        min_size=1, max_size=10
+    ))
+    content = ' '.join(sentiment_words)
+    return Article(title=draw(st.text()), content=content, ...)
+```
+
+**Property Test Coverage:**
+- All 38 correctness properties will have corresponding property-based tests
+- Edge cases (error handling, boundary conditions) covered by unit tests
+- Integration tests verify component interactions
+
+### Integration Testing
+
+Integration tests verify end-to-end workflows:
+
+- News article → Sentiment analysis → Redis → Signal generation
+- Price data → Technical indicators → Redis → Signal generation
+- Signal generation → Order execution → Database persistence
+- Backtest request → Data retrieval → Simulation → Results storage
+- WebSocket connection → Real-time updates → Dashboard display
+
+### Performance Testing
+
+Performance tests validate latency requirements:
+
+- Sentiment analysis: < 5 seconds per article
+- Event detection: < 100 milliseconds per article
+- Technical indicators: < 50 milliseconds per computation
+- Redis delivery: < 10 milliseconds
+- Database writes: < 100 milliseconds
+- API response: < 200 milliseconds for signal requests
+
+### Testing Tools
+
+- **pytest**: Python unit and integration testing
+- **Hypothesis**: Python property-based testing
+- **RapidCheck**: C++ property-based testing for Technical Indicator Engine
+- **pytest-benchmark**: Performance testing
+- **pytest-asyncio**: Async testing for FastAPI
+- **pytest-redis**: Redis testing with fixtures
+- **pytest-postgresql**: PostgreSQL testing with fixtures
+
+## Deployment Architecture
+
+### Development Environment
+
+- Docker Compose orchestrating all services
+- Hot reload for Python and React components
+- Local Redis and PostgreSQL instances
+- Mock Kite Connect API for testing
+
+### Production Environment
+
+- Kubernetes cluster for orchestration
+- Redis Cluster for high availability
+- PostgreSQL with replication (primary + 2 replicas)
+- FastAPI deployed with Gunicorn + Uvicorn workers
+- React Dashboard served via Nginx
+- Prometheus + Grafana for monitoring
+- ELK stack for centralized logging
+
+### Monitoring and Observability
+
+**Metrics:**
+- Component latency (p50, p95, p99)
+- Redis pub/sub throughput
+- Database query performance
+- Order execution success rate
+- Signal generation frequency
+- API request rate and errors
+
+**Alerts:**
+- External service unavailability
+- Component latency exceeding thresholds
+- Database connection failures
+- Order execution failures
+- Memory/CPU usage > 90%
+
+**Logging:**
+- Structured JSON logging
+- Correlation IDs for request tracing
+- Log levels: DEBUG, INFO, WARNING, ERROR, CRITICAL
+- Centralized log aggregation
+
+## Security Considerations
+
+- API key authentication for all FastAPI endpoints
+- HTTPS/TLS for all external communications
+- Kite Connect API credentials stored in environment variables
+- Database credentials managed via secrets management
+- Rate limiting on API endpoints
+- Input validation and sanitization
+- SQL injection prevention via parameterized queries
+- XSS prevention in React Dashboard
+
+## Scalability Considerations
+
+- Horizontal scaling of FastAPI workers
+- Redis Cluster for distributed caching
+- PostgreSQL read replicas for query scaling
+- Asynchronous processing for non-blocking operations
+- Message queuing for high-throughput scenarios
+- CDN for React Dashboard static assets
+- Connection pooling for database and Redis
