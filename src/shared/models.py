@@ -99,6 +99,9 @@ class IndicatorResults:
     ema_12: float
     ema_26: float
     atr: float
+    # Additional EMAs
+    ema_20: float = 0.0
+    ema_50: float = 0.0
 
 
 class TechnicalSignalType(Enum):

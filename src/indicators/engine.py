@@ -181,8 +181,8 @@ class TechnicalIndicatorEngine:
     
     def _compute_indicators_python(self, price_data: PriceData) -> IndicatorResults:
         """Python fallback implementation for indicator computation."""
-        # This is a simplified fallback - in production, you'd implement full Python versions
-        raise NotImplementedError("Python fallback not yet implemented. Please build C++ module.")
+        from src.indicators.python_indicators import PythonIndicatorEngine
+        return PythonIndicatorEngine.compute_indicators(price_data)
     
     def _generate_signals_python(self, indicators: IndicatorResults, current_price: float) -> TechnicalSignals:
         """Python fallback implementation for signal generation."""
