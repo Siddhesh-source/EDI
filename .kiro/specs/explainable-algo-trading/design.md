@@ -1294,3 +1294,252 @@ class LiveTradingConfig:
 
 ### Database Schema (PostgreSQL)
 
+
+```sql
+-- Historical price data
+CREATE TABLE historical_prices (
+    id BIGSERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
+    open DECIMAL(12, 4) NOT NULL,
+    high DECIMAL(12, 4) NOT NULL,
+    low DECIMAL(12, 4) NOT NULL,
+    close DECIMAL(12, 4) NOT NULL,
+    volume BIGINT NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_prices_symbol_timestamp ON historical_prices(symbol, timestamp DESC);
+CREATE INDEX idx_prices_timestamp ON historical_prices(timestamp DESC);
+
+-- Sentiment scores
+CREATE TABLE sentiment_scores (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL,
+    symbol VARCHAR(20),
+    source VARCHAR(100),
+    text_snippet TEXT,
+    sentiment_index DECIMAL(5, 4) NOT NULL,
+    positive_score DECIMAL(5, 4),
+    negative_score DECIMAL(5, 4),
+    neutral_score DECIMAL(5, 4),
+    confidence DECIMAL(5, 4),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_sentiment_timestamp ON sentiment_scores(timestamp DESC);
+CREATE INDEX idx_sentiment_symbol ON sentiment_scores(symbol, timestamp DESC);
+
+-- Detected events
+CREATE TABLE events (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL,
+    symbol VARCHAR(20),
+    source VARCHAR(100),
+    event_type VARCHAR(50) NOT NULL,
+    keywords_matched TEXT[],
+    event_shock_factor DECIMAL(5, 2) NOT NULL,
+    context TEXT,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_events_timestamp ON events(timestamp DESC);
+CREATE INDEX idx_events_symbol ON events(symbol, timestamp DESC);
+CREATE INDEX idx_events_type ON events(event_type);
+
+-- Trading signals
+CREATE TABLE signals (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    signal_type VARCHAR(10) NOT NULL,
+    confidence DECIMAL(5, 4),
+    cms_value DECIMAL(5, 4),
+    sentiment_index DECIMAL(5, 4),
+    trend_strength DECIMAL(5, 4),
+    volatility_index DECIMAL(5, 4),
+    event_shock_factor DECIMAL(5, 2),
+    reasoning JSONB,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_signals_symbol_timestamp ON signals(symbol, timestamp DESC);
+CREATE INDEX idx_signals_type ON signals(signal_type);
+
+-- Executed trades
+CREATE TABLE trades (
+    id BIGSERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,
+    entry_timestamp TIMESTAMPTZ NOT NULL,
+    entry_price DECIMAL(12, 4) NOT NULL,
+    exit_timestamp TIMESTAMPTZ,
+    exit_price DECIMAL(12, 4),
+    quantity INTEGER NOT NULL,
+    position_size DECIMAL(15, 2),
+    pnl DECIMAL(15, 2),
+    pnl_percent DECIMAL(8, 4),
+    exit_reason VARCHAR(50),
+    signal_type VARCHAR(10),
+    stop_loss DECIMAL(12, 4),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_trades_symbol ON trades(symbol, entry_timestamp DESC);
+CREATE INDEX idx_trades_entry ON trades(entry_timestamp DESC);
+
+-- CMS values
+CREATE TABLE cms_values (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    cms_score DECIMAL(5, 4) NOT NULL,
+    sentiment_component DECIMAL(5, 4),
+    volatility_component DECIMAL(5, 4),
+    trend_component DECIMAL(5, 4),
+    event_component DECIMAL(5, 4),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_cms_symbol_timestamp ON cms_values(symbol, timestamp DESC);
+
+-- Market regimes
+CREATE TABLE regimes (
+    id BIGSERIAL PRIMARY KEY,
+    timestamp TIMESTAMPTZ NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    regime_type VARCHAR(20) NOT NULL,
+    confidence DECIMAL(5, 4),
+    volatility_level DECIMAL(5, 4),
+    trend_direction DECIMAL(5, 4),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_regimes_symbol_timestamp ON regimes(symbol, timestamp DESC);
+
+-- Zerodha orders
+CREATE TABLE orders (
+    id BIGSERIAL PRIMARY KEY,
+    order_id VARCHAR(50) UNIQUE NOT NULL,
+    symbol VARCHAR(20) NOT NULL,
+    exchange VARCHAR(10) NOT NULL,
+    transaction_type VARCHAR(10) NOT NULL,
+    quantity INTEGER NOT NULL,
+    order_type VARCHAR(20) NOT NULL,
+    product VARCHAR(10) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    price DECIMAL(12, 4),
+    filled_quantity INTEGER DEFAULT 0,
+    average_price DECIMAL(12, 4),
+    order_timestamp TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ DEFAULT NOW(),
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_orders_symbol ON orders(symbol, order_timestamp DESC);
+CREATE INDEX idx_orders_status ON orders(status);
+
+-- Zerodha positions
+CREATE TABLE positions (
+    id BIGSERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,
+    exchange VARCHAR(10) NOT NULL,
+    quantity INTEGER NOT NULL,
+    average_price DECIMAL(12, 4) NOT NULL,
+    last_price DECIMAL(12, 4),
+    pnl DECIMAL(15, 2),
+    product VARCHAR(10) NOT NULL,
+    timestamp TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_positions_symbol ON positions(symbol, timestamp DESC);
+
+-- Zerodha holdings
+CREATE TABLE holdings (
+    id BIGSERIAL PRIMARY KEY,
+    symbol VARCHAR(20) NOT NULL,
+    exchange VARCHAR(10) NOT NULL,
+    quantity INTEGER NOT NULL,
+    average_price DECIMAL(12, 4) NOT NULL,
+    last_price DECIMAL(12, 4),
+    pnl DECIMAL(15, 2),
+    timestamp TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_holdings_symbol ON holdings(symbol);
+
+-- Zerodha margins
+CREATE TABLE margins (
+    id BIGSERIAL PRIMARY KEY,
+    user_id VARCHAR(50),
+    available_cash DECIMAL(15, 2),
+    collateral DECIMAL(15, 2),
+    utilized_margin DECIMAL(15, 2),
+    timestamp TIMESTAMPTZ NOT NULL,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+CREATE INDEX idx_margins_timestamp ON margins(timestamp DESC);
+```
+
+### Redis Channel Design
+
+
+**Channel Structure**:
+
+```
+price:live          - Real-time price updates
+  Format: {"symbol": str, "price": float, "volume": int, "timestamp": str}
+
+sentiment:live      - Real-time sentiment scores
+  Format: {"symbol": str, "sentiment_index": float, "source": str, "timestamp": str}
+
+cms:live           - Real-time CMS values
+  Format: {"symbol": str, "cms_score": float, "components": {...}, "timestamp": str}
+
+signals:live       - Trading signals
+  Format: {"symbol": str, "signal_type": str, "confidence": float, "reasoning": [...], "timestamp": str}
+
+events:live        - Detected events
+  Format: {"symbol": str, "event_type": str, "shock_factor": float, "keywords": [...], "timestamp": str}
+
+regimes:live       - Market regime changes
+  Format: {"symbol": str, "regime_type": str, "confidence": float, "timestamp": str}
+
+orders:live        - Order updates
+  Format: {"order_id": str, "symbol": str, "type": str, "quantity": int, "status": str, "timestamp": str}
+
+positions:live     - Position updates
+  Format: {"symbol": str, "quantity": int, "avg_price": float, "pnl": float, "timestamp": str}
+
+margins:live       - Margin updates
+  Format: {"available_cash": float, "utilized": float, "timestamp": str}
+
+alerts             - System alerts
+  Format: {"type": str, "message": str, "severity": str, "timestamp": str}
+```
+
+**Redis Usage Patterns**:
+
+```python
+# Publisher (Backend)
+redis_client.publish('price:live', json.dumps({
+    'symbol': 'INFY',
+    'price': 1450.50,
+    'volume': 1000000,
+    'timestamp': datetime.now().isoformat()
+}))
+
+# Subscriber (Frontend/Other Services)
+pubsub = redis_client.pubsub()
+pubsub.subscribe('price:live', 'signals:live', 'cms:live')
+
+for message in pubsub.listen():
+    if message['type'] == 'message':
+        data = json.loads(message['data'])
+        handle_update(data)
+```
+
+Now I need to complete the prework analysis before writing the Correctness Properties section.
+
