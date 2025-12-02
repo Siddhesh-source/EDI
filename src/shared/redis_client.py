@@ -12,8 +12,15 @@ from redis.connection import ConnectionPool
 from redis.exceptions import ConnectionError, TimeoutError, RedisError
 
 from src.shared.config import settings
+from src.shared.error_handling import (
+    get_circuit_breaker,
+    CircuitBreakerOpenError,
+    ErrorLogger,
+    get_degradation_manager
+)
 
 logger = logging.getLogger(__name__)
+error_logger = ErrorLogger("redis")
 
 
 class RedisChannels:
@@ -230,16 +237,29 @@ class RedisClient:
         self._reconnect_attempts = 0
         self._max_reconnect_attempts = 5
         self._base_backoff = 1.0
+        self._circuit_breaker = get_circuit_breaker(
+            name="redis",
+            failure_threshold=5,
+            recovery_timeout=30.0,
+            expected_exception=(ConnectionError, TimeoutError, RedisError)
+        )
+        self._degradation_manager = get_degradation_manager()
         
         logger.info(f"Redis client initialized: {self.host}:{self.port}/{self.db}")
     
     def ping(self) -> bool:
         """Check if Redis connection is alive."""
         try:
-            self.client.ping()
+            self._circuit_breaker.call(self.client.ping)
+            self._degradation_manager.mark_service_available("redis")
             return True
+        except CircuitBreakerOpenError:
+            logger.warning("Redis circuit breaker is open")
+            self._degradation_manager.mark_service_unavailable("redis")
+            return False
         except Exception as e:
-            logger.error(f"Redis ping failed: {e}")
+            error_logger.log_error(e, {'action': 'ping'})
+            self._degradation_manager.mark_service_unavailable("redis")
             return False
     
     def reconnect(self) -> bool:
@@ -250,7 +270,11 @@ class RedisClient:
             True if reconnection successful, False otherwise
         """
         if self._reconnect_attempts >= self._max_reconnect_attempts:
-            logger.error(f"Max reconnection attempts ({self._max_reconnect_attempts}) reached")
+            error_logger.log_error(
+                Exception(f"Max reconnection attempts ({self._max_reconnect_attempts}) reached"),
+                {'action': 'reconnect'}
+            )
+            self._degradation_manager.mark_service_unavailable("redis")
             return False
         
         backoff = self._base_backoff * (2 ** self._reconnect_attempts)
@@ -275,18 +299,24 @@ class RedisClient:
                 logger.info("Redis reconnection successful")
                 self._reconnect_attempts = 0
                 
+                # Reset circuit breaker
+                self._circuit_breaker.reset()
+                
                 # Replay buffered messages
                 self.publisher.redis_client = self.client
-                self.publisher.replay_buffer()
+                replayed = self.publisher.replay_buffer()
                 self.publisher.disable_buffering()
                 
+                logger.info(f"Replayed {replayed} buffered messages after reconnection")
+                
+                self._degradation_manager.mark_service_available("redis")
                 return True
             else:
                 self._reconnect_attempts += 1
                 return False
                 
         except Exception as e:
-            logger.error(f"Reconnection failed: {e}")
+            error_logger.log_error(e, {'action': 'reconnect', 'attempt': self._reconnect_attempts + 1})
             self._reconnect_attempts += 1
             return False
     

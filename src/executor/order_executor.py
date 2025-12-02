@@ -12,8 +12,15 @@ from src.shared.redis_client import RedisChannels, RedisClient, RedisSubscriber
 from src.shared.config import settings
 from src.database.connection import get_db_session
 from src.database.repositories import OrderRepository
+from src.shared.error_handling import (
+    ErrorLogger,
+    get_circuit_breaker,
+    CircuitBreakerOpenError,
+    get_degradation_manager
+)
 
 logger = logging.getLogger(__name__)
+error_logger = ErrorLogger("order_executor")
 
 
 class RiskManagementError(Exception):
@@ -58,6 +65,14 @@ class KiteConnectClient:
             self._initialize_kite()
         
         self._order_counter = 0
+        self._circuit_breaker = get_circuit_breaker(
+            name="kite_connect",
+            failure_threshold=3,
+            recovery_timeout=60.0,
+            expected_exception=Exception
+        )
+        self._degradation_manager = get_degradation_manager()
+        
         logger.info(
             f"Kite Connect client initialized "
             f"(simulation_mode={self._simulation_mode})"
@@ -89,7 +104,7 @@ class KiteConnectClient:
         price: Optional[float] = None
     ) -> str:
         """
-        Place an order through Kite Connect API.
+        Place an order through Kite Connect API with circuit breaker protection.
         
         Args:
             symbol: Trading symbol
@@ -102,12 +117,13 @@ class KiteConnectClient:
             Order ID from broker
             
         Raises:
+            CircuitBreakerOpenError: If circuit breaker is open
             Exception: If order placement fails
         """
         if self._simulation_mode:
             return self._simulate_order_placement(symbol, side, quantity, order_type, price)
         
-        try:
+        def _place_order_internal():
             # Map our enums to Kite Connect constants
             kite_side = self.kite.TRANSACTION_TYPE_BUY if side == Side.BUY else self.kite.TRANSACTION_TYPE_SELL
             kite_order_type = self.kite.ORDER_TYPE_MARKET if order_type == OrderType.MARKET else self.kite.ORDER_TYPE_LIMIT
@@ -132,9 +148,36 @@ class KiteConnectClient:
                 f"({side.value} {quantity} {symbol})"
             )
             return str(order_id)
+        
+        try:
+            # Use circuit breaker for order placement
+            order_id = self._circuit_breaker.call(_place_order_internal)
+            self._degradation_manager.mark_service_available("kite_connect")
+            return order_id
             
+        except CircuitBreakerOpenError as e:
+            error_logger.log_error(
+                e,
+                {
+                    'action': 'place_order',
+                    'symbol': symbol,
+                    'side': side.value,
+                    'quantity': quantity
+                }
+            )
+            self._degradation_manager.mark_service_unavailable("kite_connect")
+            raise
         except Exception as e:
-            logger.error(f"Failed to place order: {e}")
+            error_logger.log_error(
+                e,
+                {
+                    'action': 'place_order',
+                    'symbol': symbol,
+                    'side': side.value,
+                    'quantity': quantity
+                }
+            )
+            self._degradation_manager.mark_service_unavailable("kite_connect")
             raise
     
     def _simulate_order_placement(
@@ -546,24 +589,40 @@ class OrderExecutor:
     
     def _handle_execution_error(self, error: Exception):
         """
-        Handle order execution errors.
+        Handle order execution errors with graceful degradation.
         
         Args:
             error: Exception that occurred
         """
-        logger.error(f"Order execution error: {error}")
+        error_logger.log_error(
+            error,
+            {
+                'action': 'order_execution',
+                'auto_trading_enabled': self.enable_auto_trading
+            },
+            level=logging.CRITICAL
+        )
         
-        # Check if it's a Kite Connect API error
-        if "kiteconnect" in str(type(error)).lower():
-            logger.error(
-                "Kite Connect API error detected. "
-                "Disabling automatic trading."
+        # Check if it's a Kite Connect API error or circuit breaker error
+        if isinstance(error, CircuitBreakerOpenError) or "kiteconnect" in str(type(error)).lower():
+            error_logger.log_error(
+                Exception("Kite Connect API error detected. Disabling automatic trading."),
+                {'original_error': str(error)},
+                level=logging.CRITICAL
             )
+            
+            # Disable automatic trading
             self.enable_auto_trading = False
             
-            # TODO: Send alert to dashboard via WebSocket
-            # For now, just log the error
+            # Mark service as unavailable
+            self._degradation_manager.mark_service_unavailable("kite_connect")
+            
+            # Log critical alert
             logger.critical(
                 "AUTOMATIC TRADING DISABLED due to Kite Connect API failure. "
-                "Manual intervention required."
+                "Manual intervention required. "
+                "Circuit breaker status: " + str(self.kite_client._circuit_breaker.get_status())
             )
+            
+            # TODO: Send alert to dashboard via WebSocket
+            # This would notify users in real-time about the trading halt

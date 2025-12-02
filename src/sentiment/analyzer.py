@@ -16,8 +16,15 @@ from src.shared.models import Article, SentimentScore
 from src.shared.redis_client import RedisChannels, get_redis_client
 from src.database.connection import get_db_session
 from src.database.repositories import ArticleRepository, SentimentScoreRepository
+from src.shared.error_handling import (
+    ErrorLogger,
+    get_degradation_manager,
+    get_circuit_breaker,
+    CircuitBreakerOpenError
+)
 
 logger = logging.getLogger(__name__)
+error_logger = ErrorLogger("sentiment_analyzer")
 
 
 class SentimentAnalyzer:
@@ -78,6 +85,13 @@ class SentimentAnalyzer:
         self._executor = ThreadPoolExecutor(max_workers=max_workers)
         self._cached_sentiment: dict = {}
         self._last_fetch_time: Optional[datetime] = None
+        self._degradation_manager = get_degradation_manager()
+        self._circuit_breaker = get_circuit_breaker(
+            name="newsapi",
+            failure_threshold=3,
+            recovery_timeout=300.0,  # 5 minutes
+            expected_exception=NewsAPIException
+        )
         
         logger.info(f"Sentiment analyzer initialized with {max_workers} workers")
     
@@ -151,11 +165,12 @@ class SentimentAnalyzer:
                 logger.warning(f"NewsAPI returned non-ok status: {response['status']}")
         
         except NewsAPIException as e:
-            logger.error(f"NewsAPI error: {e}")
+            error_logger.log_error(e, {'action': 'fetch_news', 'symbols': symbols})
             # Mark service as unavailable
             self._handle_newsapi_unavailable()
+            self._circuit_breaker._on_failure()
         except Exception as e:
-            logger.error(f"Error fetching news: {e}")
+            error_logger.log_error(e, {'action': 'fetch_news', 'symbols': symbols})
         
         return articles
     
@@ -388,15 +403,32 @@ class SentimentAnalyzer:
         return sentiments
     
     def _handle_newsapi_unavailable(self):
-        """Handle NewsAPI service unavailability."""
-        logger.warning("NewsAPI service unavailable, using cached sentiment data")
+        """Handle NewsAPI service unavailability with graceful degradation."""
+        error_logger.log_warning(
+            "NewsAPI service unavailable, using cached sentiment data",
+            {'last_fetch_time': self._last_fetch_time.isoformat() if self._last_fetch_time else None}
+        )
+        
+        # Mark service as unavailable in degradation manager
+        self._degradation_manager.mark_service_unavailable("newsapi")
+        
+        # Store cached sentiment as fallback data
+        if self._cached_sentiment:
+            self._degradation_manager.set_fallback_data("newsapi", self._cached_sentiment)
         
         # Mark cached data as stale
         if self._last_fetch_time:
             age = datetime.now() - self._last_fetch_time
             logger.info(f"Using cached sentiment data (age: {age})")
+            
+            # Alert if cache is very old (> 1 hour)
+            if age > timedelta(hours=1):
+                error_logger.log_warning(
+                    f"Cached sentiment data is stale (age: {age})",
+                    {'cache_age_hours': age.total_seconds() / 3600}
+                )
         else:
-            logger.warning("No cached sentiment data available")
+            error_logger.log_warning("No cached sentiment data available")
     
     def get_cached_sentiment(self, article_id: str) -> Optional[SentimentScore]:
         """

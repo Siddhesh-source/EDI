@@ -23,6 +23,8 @@ from src.database.repositories import (
 from src.backtest.engine import BacktestingModule
 from src.signal.aggregator import SignalAggregator
 from src.api.middleware import LoggingMiddleware, ErrorHandlingMiddleware, RateLimitMiddleware
+from src.shared.monitoring import get_health_monitor
+from src.shared.error_handling import get_all_circuit_breakers, get_degradation_manager
 
 logger = logging.getLogger(__name__)
 
@@ -213,6 +215,67 @@ async def health_check():
             "signal_aggregator": aggregator_healthy
         }
     )
+
+
+@app.get("/health/detailed")
+async def detailed_health_check(api_key: str = Depends(verify_api_key)):
+    """Detailed health check with circuit breaker and service status.
+    
+    Returns:
+        Comprehensive health status including circuit breakers and degradation info
+    """
+    health_monitor = get_health_monitor()
+    return health_monitor.get_health_status()
+
+
+@app.get("/health/circuit-breakers")
+async def get_circuit_breakers_status(api_key: str = Depends(verify_api_key)):
+    """Get status of all circuit breakers.
+    
+    Returns:
+        Circuit breaker states for all services
+    """
+    circuit_breakers = get_all_circuit_breakers()
+    return {
+        name: breaker.get_status()
+        for name, breaker in circuit_breakers.items()
+    }
+
+
+@app.get("/health/services")
+async def get_services_status(api_key: str = Depends(verify_api_key)):
+    """Get availability status of all services.
+    
+    Returns:
+        Service availability and fallback data status
+    """
+    degradation_manager = get_degradation_manager()
+    return degradation_manager.get_status()
+
+
+@app.get("/health/alerts")
+async def get_health_alerts(api_key: str = Depends(verify_api_key)):
+    """Get active health alerts.
+    
+    Returns:
+        List of active warnings and errors
+    """
+    health_monitor = get_health_monitor()
+    return {
+        "alerts": health_monitor.get_alerts(),
+        "timestamp": datetime.now().isoformat()
+    }
+
+
+@app.get("/health/database/queue")
+async def get_database_queue_stats(api_key: str = Depends(verify_api_key)):
+    """Get database write queue statistics.
+    
+    Returns:
+        Queue size and statistics
+    """
+    from src.database.connection import db_connection
+    return db_connection.get_queue_stats()
 
 
 @app.get("/api/v1/signal/current", response_model=Optional[SignalResponse])
